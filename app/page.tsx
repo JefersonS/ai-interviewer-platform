@@ -14,12 +14,17 @@ export default function Home() {
           <li key={job.id}>
             <Link
               href={`/interview/${job.id}`}
-              className="block rounded-xl border border-zinc-200 p-5 transition-colors hover:border-zinc-400 dark:border-zinc-800 dark:hover:border-zinc-600"
+              className="group flex items-center justify-between gap-4 rounded-xl border border-zinc-200 p-5 transition hover:-translate-y-0.5 hover:border-indigo-500 hover:shadow-md focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-zinc-800 dark:hover:border-indigo-400"
             >
-              <h2 className="text-lg font-medium">{job.title}</h2>
-              <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-                {job.description}
-              </p>
+              <div>
+                <h2 className="text-lg font-medium">{job.title}</h2>
+                <p className="mt-1 text-zinc-600 dark:text-zinc-400">
+                  {job.description}
+                </p>
+              </div>
+              <span className="text-xl text-zinc-400 transition group-hover:translate-x-1 group-hover:text-indigo-500" aria-hidden>
+                &rarr;
+              </span>
             </Link>
           </li>
         ))}

@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Job } from "@/lib/jobs";
 import { TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
+import { pickEnglishVoice } from "@/lib/voice";
 
 type Status = "loading" | "ready" | "thinking" | "speaking" | "answering" | "evaluating" | "done" | "error";
 
@@ -33,6 +35,63 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   return data as T;
 }
 
+const btn =
+  "transition active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40";
+const primaryBtn = `${btn} rounded-full bg-indigo-600 px-5 py-2.5 font-medium text-white hover:bg-indigo-500`;
+const ghostBtn = `${btn} rounded-full border border-zinc-300 px-5 py-2.5 font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800`;
+
+function Icon({ d, className = "h-5 w-5" }: { d: string; className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+      <path d={d} />
+    </svg>
+  );
+}
+const ICONS = {
+  mic: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3",
+  stop: "M6 6h12v12H6z",
+  send: "M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z",
+  volume: "M11 5L6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14",
+  mute: "M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6",
+};
+
+function Bubble({ turn, onReplay }: { turn: Turn; onReplay?: () => void }) {
+  if (turn.role === "candidate") {
+    return (
+      <div className="flex justify-end">
+        <p className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-600 px-4 py-2.5 text-white">{turn.text}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="group flex items-start gap-3">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-xs font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900">AI</div>
+      <div className="flex max-w-[80%] items-center gap-2">
+        <p className="rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-2.5 dark:bg-zinc-800">{turn.text}</p>
+        {onReplay && (
+          <button onClick={onReplay} title="Replay question" aria-label="Replay question" className={`${btn} rounded-full p-1.5 text-zinc-400 opacity-0 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200`}>
+            <Icon d={ICONS.volume} className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Typing({ label }: { label: string }) {
+  return (
+    <div className="flex items-start gap-3" aria-live="polite">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-xs font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900">AI</div>
+      <div className="flex items-center gap-1 rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-3.5 dark:bg-zinc-800" title={label}>
+        {[0, 150, 300].map((d) => (
+          <span key={d} className="h-2 w-2 animate-bounce rounded-full bg-zinc-400" style={{ animationDelay: `${d}ms` }} />
+        ))}
+        <span className="sr-only">{label}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function InterviewRoom({ job }: { job: Job }) {
   const [status, setStatus] = useState<Status>("loading");
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -40,16 +99,20 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const [draft, setDraft] = useState("");
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
+  const [muted, setMuted] = useState(false);
+  const [hasSaved, setHasSaved] = useState(false);
   const canListen = useSyncExternalStore(
     () => () => {},
     () => "SpeechRecognition" in window || "webkitSpeechRecognition" in window,
     () => true,
   );
-  const [hasSaved, setHasSaved] = useState(false);
 
   const session = useRef<Saved | null>(null);
   const recognition = useRef<Recognition | null>(null);
   const finalText = useRef("");
+  const mutedRef = useRef(false);
+  const bottom = useRef<HTMLDivElement>(null);
+  const textarea = useRef<HTMLTextAreaElement>(null);
 
   const persist = useCallback(
     (nextTurns: Turn[], nextEval: Evaluation | null) => {
@@ -65,8 +128,8 @@ export default function InterviewRoom({ job }: { job: Job }) {
   );
 
   const speak = useCallback((text: string, then: () => void) => {
+    if (mutedRef.current || !("speechSynthesis" in window)) return then();
     setStatus("speaking");
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return then();
     let finished = false;
     const finish = () => {
       if (finished) return;
@@ -74,6 +137,9 @@ export default function InterviewRoom({ job }: { job: Job }) {
       then();
     };
     const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US";
+    const voice = pickEnglishVoice(window.speechSynthesis.getVoices());
+    if (voice) u.voice = voice;
     u.onend = finish;
     u.onerror = finish;
     window.speechSynthesis.cancel();
@@ -139,6 +205,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   // One-time restore from localStorage (browser-only, so it cannot run during render).
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    if ("speechSynthesis" in window) window.speechSynthesis.getVoices(); // warm up async voice list
     try {
       const raw = localStorage.getItem(storageKey(job.id));
       if (raw) {
@@ -166,6 +233,17 @@ export default function InterviewRoom({ job }: { job: Job }) {
     };
   }, []);
 
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [turns, status]);
+
+  useEffect(() => {
+    const el = textarea.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [draft]);
+
   function start(resume: boolean) {
     if (!resume || !session.current) {
       session.current = { id: crypto.randomUUID(), startedAt: Date.now(), turns: [], evaluation: null };
@@ -176,10 +254,17 @@ export default function InterviewRoom({ job }: { job: Job }) {
     advance(session.current.turns);
   }
 
+  function toggleMute() {
+    mutedRef.current = !muted;
+    setMuted(!muted);
+    if (!muted && "speechSynthesis" in window) window.speechSynthesis.cancel();
+  }
+
   function toggleMic() {
     if (listening) return recognition.current?.stop();
-    const Ctor = (window as unknown as Record<string, new () => Recognition>).SpeechRecognition ??
-      (window as unknown as Record<string, new () => Recognition>).webkitSpeechRecognition;
+    window.speechSynthesis?.cancel();
+    const w = window as unknown as Record<string, new () => Recognition>;
+    const Ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     const r = new Ctor();
     r.continuous = true;
     r.interimResults = true;
@@ -207,8 +292,9 @@ export default function InterviewRoom({ job }: { job: Job }) {
 
   function submitAnswer() {
     const text = draft.trim();
-    if (!text) return;
+    if (!text || status !== "answering") return;
     recognition.current?.stop();
+    window.speechSynthesis?.cancel();
     const next: Turn[] = [...turns, { role: "candidate", text }];
     setTurns(next);
     setDraft("");
@@ -217,113 +303,167 @@ export default function InterviewRoom({ job }: { job: Job }) {
   }
 
   const answered = turns.filter((t) => t.role === "candidate").length;
+  const inProgress = status !== "ready" && status !== "loading" && status !== "done";
+  const lastIdx = turns.length - 1;
+  const stateLabel: Partial<Record<Status, string>> = {
+    thinking: "Thinking...",
+    speaking: "Speaking...",
+    answering: listening ? "Listening..." : "Your turn",
+    evaluating: "Writing your evaluation...",
+  };
+
+  const header = (
+    <header className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+      <div className="flex items-center gap-3">
+        <Link href="/" className="rounded-full px-2 py-1 text-sm text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
+          &larr; Roles
+        </Link>
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate font-semibold">{job.title} interview</h1>
+          {inProgress && <p className="text-xs text-zinc-500">{stateLabel[status] ?? ""}</p>}
+        </div>
+        <button onClick={toggleMute} title={muted ? "Unmute interviewer" : "Mute interviewer"} aria-label={muted ? "Unmute interviewer" : "Mute interviewer"} className={`${btn} rounded-full p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100`}>
+          <Icon d={muted ? ICONS.mute : ICONS.volume} />
+        </button>
+      </div>
+      {inProgress && (
+        <div className="mt-3 flex items-center gap-3">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+            <div className="h-full rounded-full bg-indigo-600 transition-all duration-500" style={{ width: `${(answered / TOTAL_QUESTIONS) * 100}%` }} />
+          </div>
+          <span className="text-xs text-zinc-500">
+            {Math.min(answered + 1, TOTAL_QUESTIONS)} / {TOTAL_QUESTIONS}
+          </span>
+        </div>
+      )}
+    </header>
+  );
 
   return (
-    <div className="mt-6">
-      {status === "loading" && <p className="text-zinc-500">Loading...</p>}
+    <div className="mx-auto flex h-dvh w-full max-w-3xl flex-col">
+      {header}
 
-      {status === "ready" && (
-        <div className="rounded-xl border border-zinc-200 p-6 dark:border-zinc-800">
-          <p>
-            {TOTAL_QUESTIONS} questions, about 10 minutes. The interviewer speaks each question; answer with your
-            microphone, then review the text and submit.
-          </p>
-          <div className="mt-4 flex gap-3">
-            {hasSaved && (
-              <button onClick={() => start(true)} className="rounded-lg bg-foreground px-4 py-2 text-background">
-                Resume interview
+      <div className="flex-1 overflow-y-auto px-4 py-6">
+        {status === "loading" && <p className="text-center text-zinc-500">Loading...</p>}
+
+        {status === "ready" && (
+          <div className="mx-auto mt-10 max-w-md rounded-2xl border border-zinc-200 p-6 text-center dark:border-zinc-800">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-indigo-600 text-white">
+              <Icon d={ICONS.mic} className="h-7 w-7" />
+            </div>
+            <h2 className="mt-4 text-lg font-semibold">Ready when you are</h2>
+            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+              {TOTAL_QUESTIONS} questions, about 10 minutes. The interviewer speaks each question. Answer with your
+              microphone, check the text, then send.
+            </p>
+            <div className="mt-5 flex flex-col gap-2">
+              {hasSaved && (
+                <button onClick={() => start(true)} className={primaryBtn}>
+                  Resume interview
+                </button>
+              )}
+              <button onClick={() => start(false)} className={hasSaved ? ghostBtn : primaryBtn}>
+                {hasSaved ? "Start over" : "Start interview"}
               </button>
-            )}
-            <button
-              onClick={() => start(false)}
-              className={`rounded-lg px-4 py-2 ${hasSaved ? "border border-zinc-300 dark:border-zinc-700" : "bg-foreground text-background"}`}
-            >
-              {hasSaved ? "Start over" : "Start interview"}
-            </button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {status !== "ready" && status !== "loading" && status !== "done" && (
-        <p className="text-sm text-zinc-500">
-          Question {Math.min(answered + 1, TOTAL_QUESTIONS)} of {TOTAL_QUESTIONS}
-        </p>
-      )}
+        {status !== "ready" && status !== "loading" && status !== "done" && (
+          <div className="space-y-4">
+            {turns.map((t, i) => (
+              <Bubble
+                key={i}
+                turn={t}
+                onReplay={t.role === "interviewer" && i === lastIdx && status === "answering" ? () => speak(t.text, () => setStatus("answering")) : undefined}
+              />
+            ))}
+            {(status === "thinking" || status === "evaluating") && <Typing label={stateLabel[status] ?? ""} />}
+            {status === "error" && (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+                <span>{error}</span>
+                <button onClick={() => advance(turns)} className={`${btn} shrink-0 rounded-full border border-current px-4 py-1.5 hover:bg-red-100 dark:hover:bg-red-900`}>
+                  Retry
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
-      {turns.length > 0 && status !== "done" && (
-        <ul className="mt-3 space-y-3">
-          {turns.map((t, i) => (
-            <li
-              key={i}
-              className={t.role === "interviewer" ? "rounded-lg bg-zinc-100 p-3 dark:bg-zinc-900" : "ml-8 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800"}
-            >
-              <span className="text-xs uppercase text-zinc-500">{t.role === "interviewer" ? "Interviewer" : "You"}</span>
-              <p>{t.text}</p>
-            </li>
-          ))}
-        </ul>
-      )}
+        {status === "done" && evaluation && (
+          <div className="space-y-8">
+            <section className="rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
+              <div className="flex items-baseline gap-2">
+                <span className="text-5xl font-semibold">{evaluation.overall_score}</span>
+                <span className="text-zinc-500">/ 10</span>
+              </div>
+              <p className="mt-3 text-zinc-600 dark:text-zinc-400">{evaluation.summary}</p>
+              <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">Strengths</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{evaluation.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-amber-600 dark:text-amber-400">Concerns</h3>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{evaluation.concerns.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                </div>
+              </div>
+              <details className="mt-5 text-sm">
+                <summary className="cursor-pointer text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">Raw JSON</summary>
+                <pre className="mt-2 overflow-x-auto rounded-lg bg-zinc-100 p-4 dark:bg-zinc-900">{JSON.stringify(evaluation, null, 2)}</pre>
+              </details>
+            </section>
+            <section>
+              <h2 className="mb-4 text-lg font-semibold">Transcript</h2>
+              <div className="space-y-4">
+                {turns.map((t, i) => <Bubble key={i} turn={t} />)}
+              </div>
+            </section>
+            <div className="flex gap-3 pb-4">
+              <button onClick={() => start(false)} className={primaryBtn}>Practice again</button>
+              <Link href="/" className={`${ghostBtn} inline-block`}>All roles</Link>
+            </div>
+          </div>
+        )}
+        <div ref={bottom} />
+      </div>
 
-      {status === "thinking" && <p className="mt-4 text-zinc-500">Interviewer is thinking...</p>}
-      {status === "speaking" && <p className="mt-4 text-zinc-500">Interviewer is speaking...</p>}
-      {status === "evaluating" && <p className="mt-4 text-zinc-500">Writing your evaluation...</p>}
-
-      {status === "answering" && (
-        <div className="mt-4">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={4}
-            placeholder={canListen ? "Press the mic and speak. You can edit the text before submitting." : "Voice input is not supported in this browser. Type your answer."}
-            className="w-full rounded-lg border border-zinc-300 bg-transparent p-3 dark:border-zinc-700"
-          />
-          <div className="mt-2 flex gap-3">
+      {inProgress && status !== "error" && (
+        <div className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          {error && <p className="mb-2 text-sm text-red-600">{error}</p>}
+          <div className={`flex items-end gap-2 rounded-3xl border bg-white p-2 transition dark:bg-zinc-900 ${listening ? "border-red-400 ring-2 ring-red-200 dark:ring-red-900" : "border-zinc-300 focus-within:border-indigo-500 dark:border-zinc-700"}`}>
             {canListen && (
-              <button onClick={toggleMic} className={`rounded-lg px-4 py-2 ${listening ? "bg-red-600 text-white" : "border border-zinc-300 dark:border-zinc-700"}`}>
-                {listening ? "Stop recording" : "Start speaking"}
+              <button
+                onClick={toggleMic}
+                disabled={status !== "answering"}
+                aria-label={listening ? "Stop recording" : "Start recording"}
+                title={listening ? "Stop recording" : "Start recording"}
+                className={`${btn} relative shrink-0 rounded-full p-3 ${listening ? "bg-red-600 text-white hover:bg-red-500" : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"}`}
+              >
+                {listening && <span className="absolute inset-0 animate-ping rounded-full bg-red-500 opacity-40" />}
+                <Icon d={listening ? ICONS.stop : ICONS.mic} className="relative h-5 w-5" />
               </button>
             )}
-            <button onClick={submitAnswer} disabled={!draft.trim()} className="rounded-lg bg-foreground px-4 py-2 text-background disabled:opacity-40">
-              Submit answer
+            <textarea
+              ref={textarea}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submitAnswer();
+                }
+              }}
+              rows={1}
+              disabled={status !== "answering"}
+              placeholder={status !== "answering" ? "Wait for the question..." : canListen ? "Tap the mic and speak, or type your answer" : "Type your answer"}
+              className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 outline-none placeholder:text-zinc-400 disabled:opacity-50"
+            />
+            <button onClick={submitAnswer} disabled={!draft.trim() || status !== "answering"} aria-label="Send answer" title="Send (Enter)" className={`${btn} shrink-0 rounded-full bg-indigo-600 p-3 text-white hover:bg-indigo-500`}>
+              <Icon d={ICONS.send} />
             </button>
           </div>
-        </div>
-      )}
-
-      {status === "error" && (
-        <div className="mt-4 rounded-lg border border-red-300 p-4 text-red-700 dark:text-red-400">
-          <p>{error}</p>
-          <button onClick={() => advance(turns)} className="mt-2 rounded-lg border border-current px-3 py-1">
-            Retry
-          </button>
-        </div>
-      )}
-      {status === "answering" && error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-
-      {status === "done" && evaluation && (
-        <div className="space-y-8">
-          <section>
-            <h2 className="text-xl font-semibold">Evaluation</h2>
-            <p className="mt-1 text-3xl font-semibold">{evaluation.overall_score}/10</p>
-            <p className="mt-2 text-zinc-600 dark:text-zinc-400">{evaluation.summary}</p>
-            <pre className="mt-4 overflow-x-auto rounded-lg bg-zinc-100 p-4 text-sm dark:bg-zinc-900">
-              {JSON.stringify(evaluation, null, 2)}
-            </pre>
-          </section>
-          <section>
-            <h2 className="text-xl font-semibold">Transcript</h2>
-            <ul className="mt-3 space-y-3">
-              {turns.map((t, i) => (
-                <li key={i}>
-                  <span className="text-xs uppercase text-zinc-500">{t.role === "interviewer" ? "Interviewer" : "You"}</span>
-                  <p>{t.text}</p>
-                </li>
-              ))}
-            </ul>
-          </section>
-          <button onClick={() => setStatus("ready")} className="rounded-lg border border-zinc-300 px-4 py-2 dark:border-zinc-700">
-            Back
-          </button>
+          <p className="mt-2 text-center text-xs text-zinc-400">Enter to send, Shift+Enter for a new line. You can edit the transcribed text first.</p>
         </div>
       )}
     </div>
