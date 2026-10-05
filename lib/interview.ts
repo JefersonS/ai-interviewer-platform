@@ -143,7 +143,8 @@ export function validateQuestion(raw: unknown, gen?: Gen): NextQuestion {
     } else {
       const given = str(r.area, "area", 80).toLowerCase();
       const match = gen.areas.find((a) => a.toLowerCase() === given);
-      if (!match) throw new Error(`area must be exactly one of: ${gen.areas.join("; ")}`);
+      const hint = gen.required === "new_topic" ? "" : "; to stay on the previous area use kind follow_up instead";
+      if (!match) throw new Error(`area must be exactly one of: ${gen.areas.join("; ")}${hint}`);
       area = match;
     }
   }
@@ -214,8 +215,13 @@ export function questionPrompt(job: Job, history: Turn[], decision: AskDecision)
       : required === "follow_up"
         ? 'You MUST ask a follow_up that digs into something specific the candidate just said, and quote that part in "references". Repeat the previous area in "area".'
         : required === "new_topic"
-          ? `kind must be "new_topic". Set "area" to exactly one of these areas that still need covering: ${areas}.`
-          : `Choose "follow_up" only if the last answer opens a thread worth pursuing (quote it in "references" and repeat the previous area in "area"). You can afford at most ${decision.followUpsLeft} more follow-ups in the whole interview, so spend them where they add the most. Otherwise choose "new_topic" and set "area" to exactly one of: ${areas}.`;
+          ? `kind must be "new_topic": move on to a different area. Set "area" to exactly one of these areas that still need covering: ${areas}.`
+          : `Choose "follow_up" only if the last answer opens a thread worth pursuing (quote it in "references" and repeat the previous area in "area"). You can afford at most ${decision.followUpsLeft} more follow-ups in the whole interview, so spend them where they add the most. To dig deeper into the previous area you MUST use follow_up, because a "new_topic" always moves to a different area. Otherwise choose "new_topic" and set "area" to exactly one of: ${areas}.`;
+
+  const pacing =
+    index === 0
+      ? 'Pacing: this is the opening, so there is no previous answer. Set "assessment" to null and "difficulty" to 1.'
+      : `Pacing: the base difficulty for this question is ${base}. First rate the candidate's last answer on substance: strong (specific, correct, shows depth), adequate, or weak (vague, off-topic, wrong, or very short). Then set "difficulty" exactly as follows: ${levels}.`;
 
   const system = `You are a friendly, professional interviewer hiring for the role "${job.title}" (${job.description}).
 Role focus areas: ${job.focusAreas.join("; ")}.
@@ -224,7 +230,7 @@ This is a spoken conversation, question ${index + 1} of ${TOTAL_QUESTIONS}. Soun
 - Never use placeholders like [Name]. You are simply "your AI interviewer" and have no name.
 - "question": ONE short question (max 2 sentences) that flows from the reaction.
 ${kindRule}
-Pacing: the base difficulty for this question is ${base}. First rate the candidate's last answer on substance: strong (specific, correct, shows depth), adequate, or weak (vague, off-topic, wrong, or very short). Then set "difficulty" exactly as follows: ${levels}.
+${pacing}
 Difficulty scale: ${(Object.entries(DIFFICULTY_LABELS) as [string, string][]).map(([k, v]) => `${k} = ${v}`).join("; ")}.
 For a follow_up, a strong answer deserves a deeper probe and a weak one a simpler clarifying probe.
 ${SAFETY}
