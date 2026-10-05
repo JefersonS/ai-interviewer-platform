@@ -1,5 +1,5 @@
 import { getJob } from "@/lib/jobs";
-import { decideNext, parseHistory, questionPrompt, validateQuestion } from "@/lib/interview";
+import { decideNext, parseHistory, questionPrompt, requiredKind, validateQuestion } from "@/lib/interview";
 import { chatJson, LlmError } from "@/lib/llm";
 import { log } from "@/lib/logger";
 
@@ -25,14 +25,20 @@ export async function POST(request: Request) {
     return Response.json({ error: "last question is unanswered" }, { status: 400 });
   }
 
-  const decision = decideNext(history);
+  const decision = decideNext(history, job);
   if (decision.action === "finish") return Response.json({ done: true });
 
   try {
     const question = await chatJson({
       label: `next_question:${job.id}:q${history.length / 2 + 1}`,
-      messages: questionPrompt(job, history, decision.required),
-      validate: (raw) => validateQuestion(raw, decision.required, history.length / 2),
+      messages: questionPrompt(job, history, decision),
+      validate: (raw) =>
+        validateQuestion(raw, {
+          required: requiredKind(decision),
+          index: history.length / 2,
+          areas: decision.newTopicAreas,
+          parentArea: decision.parentArea,
+        }),
     });
     return Response.json({ done: false, question });
   } catch (e) {

@@ -169,7 +169,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
         const q = data.question;
         const withQ: Turn[] = [
           ...history,
-          { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment },
+          { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment },
         ];
         setTurns(withQ);
         persist(withQ, null);

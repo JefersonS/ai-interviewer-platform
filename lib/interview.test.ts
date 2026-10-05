@@ -1,24 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
   baseDifficulty,
-  formatTranscript,
-  MAX_CLARIFICATIONS,
-  validateClarification,
   decideNext,
   difficultyFor,
+  formatTranscript,
+  MAX_CLARIFICATIONS,
+  MIN_FOLLOW_UPS,
   parseHistory,
+  requiredKind,
   TOTAL_QUESTIONS,
+  validateClarification,
   validateEvaluation,
   validateQuestion,
+  type AskDecision,
+  type Gen,
   type QuestionKind,
   type Turn,
 } from "./interview";
+import { JOBS } from "./jobs";
 
-const q = (kind: QuestionKind): Turn => ({
+const job = JOBS[0];
+const [A1, A2] = job.focusAreas;
+
+const q = (kind: QuestionKind, area = A1): Turn => ({
   role: "interviewer",
   text: "Q?",
   kind,
   topic: "t",
+  area,
   reasoning: "r",
   references: kind === "follow_up" ? "something they said" : "",
   difficulty: 1,
@@ -29,42 +38,76 @@ const a: Turn = { role: "candidate", text: "An answer" };
 // Builds an alternating history from a list of question kinds (each answered).
 const history = (kinds: QuestionKind[]): Turn[] => kinds.flatMap((k) => [q(k), a]);
 
+// Plays the whole interview, letting `choose` pick among the allowed kinds each turn.
+type Chooser = (d: AskDecision, step: number) => QuestionKind;
+function simulate(j: (typeof JOBS)[number], choose: Chooser) {
+  let h: Turn[] = [];
+  for (let step = 0; ; step++) {
+    const d = decideNext(h, j);
+    if (d.action === "finish") break;
+    const kind = choose(d, step);
+    expect(d.allowed).toContain(kind); // the policy must never offer a dead end
+    const area = kind === "follow_up" ? (d.parentArea as string) : d.newTopicAreas[d.newTopicAreas.length - 1];
+    h = [...h, q(kind, area), a];
+  }
+  return h.filter((t): t is Extract<Turn, { role: "interviewer" }> => t.role === "interviewer");
+}
+
+const STRATEGIES: Record<string, Chooser> = {
+  "always follow up when allowed": (d) => (d.allowed.includes("follow_up") ? "follow_up" : "new_topic"),
+  "always move on when allowed": (d) => (d.allowed.includes("new_topic") ? "new_topic" : "follow_up"),
+  "alternate": (d, step) => d.allowed[step % d.allowed.length],
+};
+
 describe("decideNext", () => {
   it("opens with a new topic", () => {
-    expect(decideNext([])).toEqual({ action: "ask", required: "new_topic" });
-  });
-
-  it("leaves the model free while there is slack", () => {
-    expect(decideNext(history(["new_topic"]))).toEqual({ action: "ask", required: null });
-  });
-
-  it("forces follow-ups when the remaining slots equal the quota owed", () => {
-    // 5 asked, 0 follow-ups -> 2 slots left, 2 owed
-    const h = history(["new_topic", "new_topic", "new_topic", "new_topic", "new_topic"]);
-    expect(decideNext(h)).toEqual({ action: "ask", required: "follow_up" });
-  });
-
-  it("stops forcing once the quota is met", () => {
-    const h = history(["new_topic", "follow_up", "new_topic", "follow_up", "new_topic", "new_topic"]);
-    expect(decideNext(h)).toEqual({ action: "ask", required: null });
+    const d = decideNext([], job) as AskDecision;
+    expect(d.allowed).toEqual(["new_topic"]);
+    expect(d.newTopicAreas).toEqual(job.focusAreas);
   });
 
   it("finishes after the last question", () => {
-    const h = history(Array(TOTAL_QUESTIONS).fill("new_topic"));
-    expect(decideNext(h)).toEqual({ action: "finish" });
+    expect(decideNext(history(Array(TOTAL_QUESTIONS).fill("new_topic")), job)).toEqual({ action: "finish" });
   });
 
-  it("always yields at least 2 follow-ups when forced choices are obeyed", () => {
-    let h: Turn[] = [];
-    for (;;) {
-      const d = decideNext(h);
-      if (d.action === "finish") break;
-      h = [...h, q(d.required ?? "new_topic"), a];
-    }
-    const followUps = h.filter((t) => t.role === "interviewer" && t.kind === "follow_up");
-    expect(h.filter((t) => t.role === "interviewer")).toHaveLength(TOTAL_QUESTIONS);
-    expect(followUps.length).toBeGreaterThanOrEqual(2);
+  it("every job has room for all its areas plus the follow-up minimum", () => {
+    for (const j of JOBS) expect(j.focusAreas.length + MIN_FOLLOW_UPS).toBeLessThanOrEqual(TOTAL_QUESTIONS);
   });
+
+  it("lets a good thread run for the whole follow-up budget, then forces the next area", () => {
+    const kinds = simulate(job, STRATEGIES["always follow up when allowed"]).map((t) => t.kind);
+    expect(kinds).toEqual(["new_topic", "follow_up", "follow_up", "follow_up", "new_topic", "new_topic", "new_topic"]);
+  });
+
+  it("forces an uncovered area once only enough slots remain to cover them", () => {
+    const h = [...history(["new_topic"]), q("follow_up"), a, q("follow_up"), a, q("follow_up"), a];
+    const d = decideNext(h, job) as AskDecision;
+    expect(requiredKind(d)).toBe("new_topic");
+    expect(d.newTopicAreas).toEqual(job.focusAreas.filter((x) => x !== A1));
+    expect(d.followUpsLeft).toBe(0);
+  });
+
+  it("forces follow-ups when the minimum would otherwise be missed", () => {
+    // Moving on every time covers all areas but leaves only 2 slots, both owed.
+    const h = history(["new_topic", "new_topic", "new_topic", "new_topic", "new_topic"]).map((t, i) =>
+      t.role === "interviewer" ? { ...t, area: job.focusAreas[Math.floor(i / 2) % job.focusAreas.length] } : t,
+    );
+    const d = decideNext(h, job) as AskDecision;
+    expect(requiredKind(d)).toBe("follow_up");
+  });
+
+  for (const j of JOBS) {
+    for (const [name, choose] of Object.entries(STRATEGIES)) {
+      it(`${j.title}: guarantees coverage and follow-up bounds (${name})`, () => {
+        const asked = simulate(j, choose);
+        const followUps = asked.filter((t) => t.kind === "follow_up").length;
+        expect(asked).toHaveLength(TOTAL_QUESTIONS);
+        expect(new Set(asked.map((t) => t.area))).toEqual(new Set(j.focusAreas));
+        expect(followUps).toBeGreaterThanOrEqual(MIN_FOLLOW_UPS);
+        expect(followUps).toBeLessThanOrEqual(TOTAL_QUESTIONS - j.focusAreas.length);
+      });
+    }
+  }
 });
 
 describe("pacing", () => {
@@ -84,41 +127,56 @@ describe("pacing", () => {
 });
 
 describe("validateQuestion", () => {
-  const ok = { question: "Why?", kind: "new_topic", topic: "x", reasoning: "y", references: "", difficulty: 1, assessment: null };
-  const gen = { ...ok, reaction: "Nice to meet you." };
+  const ok = { question: "Why?", kind: "new_topic", topic: "x", area: A1, reasoning: "y", references: "", difficulty: 1, assessment: null };
+  const raw = { ...ok, reaction: "Nice to meet you." };
+  const G = (over: Partial<Gen> = {}): Gen => ({ required: null, index: 0, areas: job.focusAreas, parentArea: null, ...over });
 
   it("generation mode prepends the reaction", () => {
-    expect(validateQuestion(gen, null, 0).question).toBe("Nice to meet you. Why?");
+    expect(validateQuestion(raw, G()).question).toBe("Nice to meet you. Why?");
   });
   it("generation mode requires a reaction", () => {
-    expect(() => validateQuestion(ok, null, 0)).toThrow(/reaction/);
+    expect(() => validateQuestion(ok, G())).toThrow(/reaction/);
   });
   it("rejects a difficulty that breaks the pacing rule", () => {
-    const mid = { ...gen, assessment: "strong", difficulty: baseDifficulty(3) };
-    expect(() => validateQuestion(mid, null, 3)).toThrow(/difficulty must be/);
-    expect(validateQuestion({ ...mid, difficulty: baseDifficulty(3) + 1 }, null, 3).difficulty).toBe(baseDifficulty(3) + 1);
+    const mid = { ...raw, assessment: "strong", difficulty: baseDifficulty(3) };
+    expect(() => validateQuestion(mid, G({ index: 3 }))).toThrow(/difficulty must be/);
+    expect(validateQuestion({ ...mid, difficulty: baseDifficulty(3) + 1 }, G({ index: 3 })).difficulty).toBe(baseDifficulty(3) + 1);
   });
   it("requires an assessment after the first question", () => {
-    expect(() => validateQuestion({ ...gen, difficulty: baseDifficulty(2) }, null, 2)).toThrow(/assessment/);
+    expect(() => validateQuestion({ ...raw, difficulty: baseDifficulty(2) }, G({ index: 2 }))).toThrow(/assessment/);
   });
   it("rejects bracketed placeholders in spoken text", () => {
-    expect(() => validateQuestion({ ...gen, reaction: "Hi, I'm [Interviewer's Name]." }, null, 0)).toThrow(/placeholders/);
+    expect(() => validateQuestion({ ...raw, reaction: "Hi, I'm [Interviewer's Name]." }, G())).toThrow(/placeholders/);
   });
   it("rejects an unknown assessment", () => {
-    expect(() => validateQuestion({ ...ok, assessment: "great" }, null)).toThrow();
-  });
-
-  it("accepts a valid question", () => {
-    expect(validateQuestion(ok, null).question).toBe("Why?");
+    expect(() => validateQuestion({ ...ok, assessment: "great" })).toThrow();
   });
   it("rejects a kind that violates the required kind", () => {
-    expect(() => validateQuestion(ok, "follow_up")).toThrow();
+    expect(() => validateQuestion(raw, G({ required: "follow_up" }))).toThrow(/kind must be/);
+  });
+  it("rejects a new_topic area outside the allowed set", () => {
+    expect(() => validateQuestion({ ...raw, area: "cooking" }, G())).toThrow(/area must be/);
+    expect(() => validateQuestion(raw, G({ areas: [A2] }))).toThrow(/area must be/);
+  });
+  it("matches the area case-insensitively and returns the canonical name", () => {
+    expect(validateQuestion({ ...raw, area: A1.toUpperCase() }, G()).area).toBe(A1);
+  });
+  it("makes a follow-up inherit the parent area, whatever the model said", () => {
+    const fu = { ...raw, kind: "follow_up", references: "quote", assessment: "adequate", difficulty: baseDifficulty(2), area: A2 };
+    expect(validateQuestion(fu, G({ index: 2, parentArea: A1 })).area).toBe(A1);
+  });
+
+  it("history mode accepts a valid question", () => {
+    expect(validateQuestion(ok).question).toBe("Why?");
+  });
+  it("history mode tolerates a missing area (legacy sessions)", () => {
+    expect(validateQuestion({ ...ok, area: undefined }).area).toBe("");
   });
   it("rejects a follow-up that quotes nothing", () => {
-    expect(() => validateQuestion({ ...ok, kind: "follow_up" }, null)).toThrow(/references/);
+    expect(() => validateQuestion({ ...ok, kind: "follow_up" })).toThrow(/references/);
   });
   it("rejects a missing question", () => {
-    expect(() => validateQuestion({ ...ok, question: " " }, null)).toThrow();
+    expect(() => validateQuestion({ ...ok, question: " " })).toThrow();
   });
 });
 
@@ -139,6 +197,10 @@ describe("validateEvaluation", () => {
 describe("parseHistory", () => {
   it("accepts an alternating history", () => {
     expect(parseHistory(history(["new_topic"]))).toHaveLength(2);
+  });
+  it("keeps the area of each question", () => {
+    const parsed = parseHistory(history(["new_topic"]));
+    expect(parsed[0].role === "interviewer" && parsed[0].area).toBe(A1);
   });
   it("rejects turns out of order", () => {
     expect(() => parseHistory([a])).toThrow();
