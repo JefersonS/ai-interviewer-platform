@@ -112,6 +112,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const finalText = useRef("");
   const mutedRef = useRef(false);
   const closingSpoken = useRef(false);
+  const closingDone = useRef<Promise<void>>(Promise.resolve());
   const bottom = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
 
@@ -183,6 +184,8 @@ export default function InterviewRoom({ job }: { job: Job }) {
         const data = await post<{ evaluation: Evaluation }>("/api/interview/evaluate", { jobId: job.id, history });
         setEvaluation(data.evaluation);
         persist(history, data.evaluation);
+        // Leaving the page cancels speech, so let the closing line finish first.
+        await closingDone.current;
         router.push(`/interview/${job.id}/summary`);
       } catch (e) {
         setError((e as Error).message);
@@ -197,7 +200,9 @@ export default function InterviewRoom({ job }: { job: Job }) {
     (history: Turn[]) => {
       const last = history[history.length - 1];
       if (history.length >= TOTAL_QUESTIONS * 2) {
-        if (!closingSpoken.current) speak(CLOSING_LINE, () => {});
+        if (!closingSpoken.current) {
+          closingDone.current = new Promise<void>((resolve) => speak(CLOSING_LINE, resolve));
+        }
         closingSpoken.current = true;
         setClosing(true);
         return void evaluate(history);
