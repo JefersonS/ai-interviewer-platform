@@ -43,3 +43,6 @@ next-env.d.ts
 
 # project
 WORKING_AGREEMENT.md
+
+# live test output
+tests/conversations/live-results.json
