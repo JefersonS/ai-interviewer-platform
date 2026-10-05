@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import type { Job } from "@/lib/jobs";
 import { TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
 import { CLOSING_LINE, parseSaved, storageKey, type Saved } from "@/lib/session";
+import { fixTechTerms } from "@/lib/glossary";
 import { pickEnglishVoice } from "@/lib/voice";
 
 type Status = "loading" | "ready" | "thinking" | "speaking" | "answering" | "evaluating" | "error";
@@ -285,7 +286,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
         if (res.isFinal) finalText.current += res[0].transcript.trim() + " ";
         else interim += res[0].transcript;
       }
-      setDraft((finalText.current + interim).trim());
+      setDraft(fixTechTerms((finalText.current + interim).trim()));
     };
     r.onend = () => setListening(false);
     r.onerror = (e) => {
