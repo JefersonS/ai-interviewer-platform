@@ -66,6 +66,8 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 25_000;
   const doFetch = opts.fetchImpl ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
+  // Grows on invalid output: the model sees what it got wrong instead of repeating it.
+  let messages = opts.messages;
 
   await acquire();
   try {
@@ -73,13 +75,14 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const started = Date.now();
       let retryAfter: string | null = null;
+      let rejected: string | null = null;
       try {
         const res = await doFetch(ENDPOINT, {
           method: "POST",
           headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             model,
-            messages: opts.messages,
+            messages,
             response_format: { type: "json_object" },
             temperature: 0.4,
           }),
@@ -95,6 +98,7 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
           const body = await res.json();
           const content = body?.choices?.[0]?.message?.content;
           if (typeof content !== "string") throw new Error("response had no message content");
+          rejected = content;
           const value = opts.validate(extractJson(content));
           log("info", "llm.ok", { label: opts.label, attempt, ms: Date.now() - started, model });
           return value;
@@ -107,6 +111,13 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
           // JSON/validation errors are SyntaxError or plain Error from validate; network ones are TypeError.
           const isNetwork = timedOut || err instanceof TypeError;
           lastError = new LlmError(reason, isNetwork ? "network" : "invalid_output");
+          if (lastError.kind === "invalid_output" && rejected !== null) {
+            messages = [
+              ...opts.messages,
+              { role: "assistant", content: rejected },
+              { role: "user", content: `Your reply was rejected: ${reason}. Reply again with only the corrected JSON.` },
+            ];
+          }
         }
       }
 

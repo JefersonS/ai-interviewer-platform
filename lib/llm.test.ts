@@ -66,6 +66,19 @@ describe("chatJson", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("tells the model why its previous reply was rejected", async () => {
+    const bodies: { messages: { role: string; content: string }[] }[] = [];
+    const fetchImpl = vi.fn().mockImplementation(async (_url: string, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body));
+      return bodies.length === 1 ? reply('{"ok": false}') : reply('{"ok": true}');
+    });
+    await chatJson({ ...base, messages: [{ role: "user", content: "hi" }], fetchImpl });
+    const retryMessages = bodies[1].messages;
+    expect(retryMessages).toHaveLength(3);
+    expect(retryMessages[1]).toEqual({ role: "assistant", content: '{"ok": false}' });
+    expect(retryMessages[2].content).toContain("ok must be true");
+  });
+
   it("retries network failures", async () => {
     const fetchImpl = vi
       .fn()
