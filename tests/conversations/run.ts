@@ -32,6 +32,7 @@ export async function runConversation(scn: Scenario): Promise<Result> {
       references: q.references,
       difficulty: q.difficulty,
       assessment: q.assessment,
+      ...(q.source ? { source: q.source } : {}),
     };
     history.push(turn);
 

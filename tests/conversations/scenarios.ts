@@ -7,6 +7,7 @@ export type Scenario = {
   // Only used by the offline fake model:
   eager: boolean; // follow up whenever the policy leaves the choice open
   flakyAtQuestion?: number; // fake model gets this question's difficulty wrong until it is told why
+  failQuestions?: "all" | number[]; // fake model returns garbage for these questions (0-based), forcing the fallback
 };
 
 export const SCENARIOS: Scenario[] = [

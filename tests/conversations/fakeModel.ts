@@ -47,7 +47,12 @@ export function fakeModel(scn: Scenario) {
     const system = messages[0].content;
 
     let payload: unknown;
-    if (system.startsWith("You are a friendly, professional interviewer")) payload = questionPayload(system, messages);
+    if (system.startsWith("You are a friendly, professional interviewer")) {
+      const idx = Number(/question (\d+) of/.exec(system)?.[1]) - 1;
+      const fails = scn.failQuestions === "all" || (Array.isArray(scn.failQuestions) && scn.failQuestions.includes(idx));
+      if (fails) return new Response(JSON.stringify({ choices: [{ message: { content: "Sorry, I cannot do that." } }] }), { status: 200 });
+      payload = questionPayload(system, messages);
+    }
     else if (system.startsWith("You evaluate a voice interview")) {
       payload = {
         strengths: ["Clear examples"],

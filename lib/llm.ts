@@ -3,9 +3,21 @@ import { log } from "./logger";
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
 export class LlmError extends Error {
-  constructor(message: string, readonly kind: "config" | "http" | "invalid_output" | "network") {
+  constructor(
+    message: string,
+    readonly kind: "config" | "http" | "invalid_output" | "network",
+    readonly status?: number,
+  ) {
     super(message);
   }
+}
+
+// True for failures that may clear up on their own (bad output, network, rate limit,
+// provider outage). False for ones that need a human, like a missing or rejected key.
+export function isTransient(e: unknown): boolean {
+  if (!(e instanceof LlmError)) return false;
+  if (e.kind === "invalid_output" || e.kind === "network") return true;
+  return e.kind === "http" && (e.status === 429 || (e.status ?? 0) >= 500);
 }
 
 type Options<T> = {
@@ -92,7 +104,7 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
         if (!res.ok) {
           retryAfter = res.headers.get("retry-after");
           const retryable = res.status === 429 || res.status >= 500;
-          lastError = new LlmError(`OpenRouter HTTP ${res.status}`, "http");
+          lastError = new LlmError(`OpenRouter HTTP ${res.status}`, "http", res.status);
           if (!retryable) throw Object.assign(lastError, { fatal: true });
         } else {
           const body = await res.json();

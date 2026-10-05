@@ -1,6 +1,7 @@
 import { getJob } from "@/lib/jobs";
 import { decideNext, parseHistory, questionPrompt, requiredKind, validateQuestion } from "@/lib/interview";
-import { chatJson, LlmError } from "@/lib/llm";
+import { fallbackQuestion } from "@/lib/fallback";
+import { chatJson, isTransient, LlmError } from "@/lib/llm";
 import { log } from "@/lib/logger";
 
 export async function POST(request: Request) {
@@ -43,6 +44,12 @@ export async function POST(request: Request) {
     return Response.json({ done: false, question });
   } catch (e) {
     const kind = e instanceof LlmError ? e.kind : "unknown";
+    // Keep the interview going with a bank question, unless the cause needs a human
+    // (missing or rejected API key): hiding that would make a broken deploy look healthy.
+    if (isTransient(e)) {
+      log("warn", "next_question.fallback", { jobId: job.id, index: history.length / 2, kind });
+      return Response.json({ done: false, question: fallbackQuestion(job, history, decision) });
+    }
     log("error", "next_question.failed", { jobId: job.id, kind });
     return Response.json({ error: "The interviewer is unavailable, please retry." }, { status: 502 });
   }
