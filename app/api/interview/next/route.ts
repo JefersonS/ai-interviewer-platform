@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     const question = await chatJson({
       label: `next_question:${job.id}:q${history.length / 2 + 1}`,
       messages: questionPrompt(job, history, decision.required),
-      validate: (raw) => validateQuestion(raw, decision.required),
+      validate: (raw) => validateQuestion(raw, decision.required, history.length / 2),
     });
     return Response.json({ done: false, question });
   } catch (e) {

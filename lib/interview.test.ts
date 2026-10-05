@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  baseDifficulty,
   decideNext,
+  difficultyFor,
   parseHistory,
   TOTAL_QUESTIONS,
   validateEvaluation,
@@ -16,6 +18,8 @@ const q = (kind: QuestionKind): Turn => ({
   topic: "t",
   reasoning: "r",
   references: kind === "follow_up" ? "something they said" : "",
+  difficulty: 1,
+  assessment: null,
 });
 const a: Turn = { role: "candidate", text: "An answer" };
 
@@ -60,8 +64,46 @@ describe("decideNext", () => {
   });
 });
 
+describe("pacing", () => {
+  it("ramps from 1 to 4 across the interview", () => {
+    const ramp = Array.from({ length: TOTAL_QUESTIONS }, (_, i) => baseDifficulty(i));
+    expect(ramp[0]).toBe(1);
+    expect(ramp[TOTAL_QUESTIONS - 1]).toBe(4);
+    expect([...ramp].sort()).toEqual(ramp); // never decreases
+  });
+  it("moves a level with answer quality, clamped to 1-4", () => {
+    expect(difficultyFor(3, "strong")).toBe(baseDifficulty(3) + 1);
+    expect(difficultyFor(3, "weak")).toBe(baseDifficulty(3) - 1);
+    expect(difficultyFor(3, "adequate")).toBe(baseDifficulty(3));
+    expect(difficultyFor(0, "weak")).toBe(1);
+    expect(difficultyFor(TOTAL_QUESTIONS - 1, "strong")).toBe(4);
+  });
+});
+
 describe("validateQuestion", () => {
-  const ok = { question: "Why?", kind: "new_topic", topic: "x", reasoning: "y", references: "" };
+  const ok = { question: "Why?", kind: "new_topic", topic: "x", reasoning: "y", references: "", difficulty: 1, assessment: null };
+  const gen = { ...ok, reaction: "Nice to meet you." };
+
+  it("generation mode prepends the reaction", () => {
+    expect(validateQuestion(gen, null, 0).question).toBe("Nice to meet you. Why?");
+  });
+  it("generation mode requires a reaction", () => {
+    expect(() => validateQuestion(ok, null, 0)).toThrow(/reaction/);
+  });
+  it("rejects a difficulty that breaks the pacing rule", () => {
+    const mid = { ...gen, assessment: "strong", difficulty: baseDifficulty(3) };
+    expect(() => validateQuestion(mid, null, 3)).toThrow(/difficulty must be/);
+    expect(validateQuestion({ ...mid, difficulty: baseDifficulty(3) + 1 }, null, 3).difficulty).toBe(baseDifficulty(3) + 1);
+  });
+  it("requires an assessment after the first question", () => {
+    expect(() => validateQuestion({ ...gen, difficulty: baseDifficulty(2) }, null, 2)).toThrow(/assessment/);
+  });
+  it("rejects bracketed placeholders in spoken text", () => {
+    expect(() => validateQuestion({ ...gen, reaction: "Hi, I'm [Interviewer's Name]." }, null, 0)).toThrow(/placeholders/);
+  });
+  it("rejects an unknown assessment", () => {
+    expect(() => validateQuestion({ ...ok, assessment: "great" }, null)).toThrow();
+  });
 
   it("accepts a valid question", () => {
     expect(validateQuestion(ok, null).question).toBe("Why?");
