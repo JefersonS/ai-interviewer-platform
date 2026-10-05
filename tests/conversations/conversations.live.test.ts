@@ -36,6 +36,7 @@ describe.skipIf(!hasKey)("full conversations (live model)", () => {
             area: t.area,
             difficulty: t.difficulty,
             assessment: t.assessment,
+            source: t.source ?? "model", // "fallback" means the model failed and the bank was used
             text: t.text,
             answer: scn.answers[i],
           })),
