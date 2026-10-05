@@ -1,14 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Job } from "@/lib/jobs";
 import { TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
+import { CLOSING_LINE, parseSaved, storageKey, type Saved } from "@/lib/session";
 import { pickEnglishVoice } from "@/lib/voice";
 
-type Status = "loading" | "ready" | "thinking" | "speaking" | "answering" | "evaluating" | "done" | "error";
-
-type Saved = { id: string; startedAt: number; turns: Turn[]; evaluation: Evaluation | null };
+type Status = "loading" | "ready" | "thinking" | "speaking" | "answering" | "evaluating" | "error";
 
 // Minimal typing: SpeechRecognition is not in TypeScript's DOM lib.
 type Recognition = {
@@ -21,8 +21,6 @@ type Recognition = {
   start(): void;
   stop(): void;
 };
-
-const storageKey = (jobId: string) => `interview:${jobId}`;
 
 async function post<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
@@ -55,7 +53,7 @@ const ICONS = {
   mute: "M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6",
 };
 
-function Bubble({ turn, onReplay }: { turn: Turn; onReplay?: () => void }) {
+function Bubble({ turn, onReplay }: { turn: { role: Turn["role"]; text: string }; onReplay?: () => void }) {
   if (turn.role === "candidate") {
     return (
       <div className="flex justify-end">
@@ -100,6 +98,8 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const router = useRouter();
   const [hasSaved, setHasSaved] = useState(false);
   const canListen = useSyncExternalStore(
     () => () => {},
@@ -111,6 +111,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const recognition = useRef<Recognition | null>(null);
   const finalText = useRef("");
   const mutedRef = useRef(false);
+  const closingSpoken = useRef(false);
   const bottom = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
 
@@ -182,20 +183,25 @@ export default function InterviewRoom({ job }: { job: Job }) {
         const data = await post<{ evaluation: Evaluation }>("/api/interview/evaluate", { jobId: job.id, history });
         setEvaluation(data.evaluation);
         persist(history, data.evaluation);
-        setStatus("done");
+        router.push(`/interview/${job.id}/summary`);
       } catch (e) {
         setError((e as Error).message);
         setStatus("error");
       }
     },
-    [job.id, persist],
+    [job.id, persist, router],
   );
 
   // Decide what to do next from whatever history we have (fresh or resumed).
   const advance = useCallback(
     (history: Turn[]) => {
       const last = history[history.length - 1];
-      if (history.length >= TOTAL_QUESTIONS * 2) return void evaluate(history);
+      if (history.length >= TOTAL_QUESTIONS * 2) {
+        if (!closingSpoken.current) speak(CLOSING_LINE, () => {});
+        closingSpoken.current = true;
+        setClosing(true);
+        return void evaluate(history);
+      }
       if (last?.role === "interviewer") return speak(last.text, () => setStatus("answering"));
       void askNext(history);
     },
@@ -207,20 +213,15 @@ export default function InterviewRoom({ job }: { job: Job }) {
   useEffect(() => {
     if ("speechSynthesis" in window) window.speechSynthesis.getVoices(); // warm up async voice list
     try {
-      const raw = localStorage.getItem(storageKey(job.id));
-      if (raw) {
-        const saved = JSON.parse(raw) as Saved;
-        if (saved.turns?.length) {
-          session.current = saved;
-          setTurns(saved.turns);
-          setEvaluation(saved.evaluation);
-          setHasSaved(true);
-          setStatus(saved.evaluation ? "done" : "ready");
-          return;
-        }
+      const saved = parseSaved(localStorage.getItem(storageKey(job.id)));
+      if (saved?.turns.length) {
+        session.current = saved;
+        setTurns(saved.turns);
+        setEvaluation(saved.evaluation);
+        setHasSaved(true);
       }
     } catch {
-      // Corrupt saved data: start fresh.
+      // Storage unavailable: start fresh.
     }
     setStatus("ready");
   }, [job.id]);
@@ -251,6 +252,8 @@ export default function InterviewRoom({ job }: { job: Job }) {
       setEvaluation(null);
       persist([], null);
     }
+    setClosing(false);
+    closingSpoken.current = false;
     advance(session.current.turns);
   }
 
@@ -303,7 +306,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   }
 
   const answered = turns.filter((t) => t.role === "candidate").length;
-  const inProgress = status !== "ready" && status !== "loading" && status !== "done";
+  const inProgress = status !== "ready" && status !== "loading";
   const lastIdx = turns.length - 1;
   const stateLabel: Partial<Record<Status, string>> = {
     thinking: "Thinking...",
@@ -357,7 +360,12 @@ export default function InterviewRoom({ job }: { job: Job }) {
               microphone, check the text, then send.
             </p>
             <div className="mt-5 flex flex-col gap-2">
-              {hasSaved && (
+              {hasSaved && evaluation && (
+                <Link href={`/interview/${job.id}/summary`} className={`${primaryBtn} inline-block`}>
+                  View results
+                </Link>
+              )}
+              {hasSaved && !evaluation && (
                 <button onClick={() => start(true)} className={primaryBtn}>
                   Resume interview
                 </button>
@@ -369,7 +377,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
           </div>
         )}
 
-        {status !== "ready" && status !== "loading" && status !== "done" && (
+        {inProgress && (
           <div className="space-y-4">
             {turns.map((t, i) => (
               <Bubble
@@ -378,6 +386,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
                 onReplay={t.role === "interviewer" && i === lastIdx && status === "answering" ? () => speak(t.text, () => setStatus("answering")) : undefined}
               />
             ))}
+            {closing && <Bubble turn={{ role: "interviewer", text: CLOSING_LINE }} />}
             {(status === "thinking" || status === "evaluating") && <Typing label={stateLabel[status] ?? ""} />}
             {status === "error" && (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
@@ -390,41 +399,6 @@ export default function InterviewRoom({ job }: { job: Job }) {
           </div>
         )}
 
-        {status === "done" && evaluation && (
-          <div className="space-y-8">
-            <section className="rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
-              <div className="flex items-baseline gap-2">
-                <span className="text-5xl font-semibold">{evaluation.overall_score}</span>
-                <span className="text-zinc-500">/ 10</span>
-              </div>
-              <p className="mt-3 text-zinc-600 dark:text-zinc-400">{evaluation.summary}</p>
-              <div className="mt-5 grid gap-5 sm:grid-cols-2">
-                <div>
-                  <h3 className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">Strengths</h3>
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{evaluation.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-amber-600 dark:text-amber-400">Concerns</h3>
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">{evaluation.concerns.map((s, i) => <li key={i}>{s}</li>)}</ul>
-                </div>
-              </div>
-              <details className="mt-5 text-sm">
-                <summary className="cursor-pointer text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">Raw JSON</summary>
-                <pre className="mt-2 overflow-x-auto rounded-lg bg-zinc-100 p-4 dark:bg-zinc-900">{JSON.stringify(evaluation, null, 2)}</pre>
-              </details>
-            </section>
-            <section>
-              <h2 className="mb-4 text-lg font-semibold">Transcript</h2>
-              <div className="space-y-4">
-                {turns.map((t, i) => <Bubble key={i} turn={t} />)}
-              </div>
-            </section>
-            <div className="flex gap-3 pb-4">
-              <button onClick={() => start(false)} className={primaryBtn}>Practice again</button>
-              <Link href="/" className={`${ghostBtn} inline-block`}>All roles</Link>
-            </div>
-          </div>
-        )}
         <div ref={bottom} />
       </div>
 
