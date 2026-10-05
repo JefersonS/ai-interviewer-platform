@@ -21,6 +21,7 @@ type Recognition = {
   onerror: ((e: { error: string }) => void) | null;
   start(): void;
   stop(): void;
+  abort(): void;
 };
 
 async function post<T>(url: string, body: unknown): Promise<T> {
@@ -303,10 +304,25 @@ export default function InterviewRoom({ job }: { job: Job }) {
     setListening(true);
   }
 
+  // stop() delivers late results after the box is cleared, which re-filled it with
+  // the previous answer. Detach the handlers and drop the buffer instead.
+  function discardRecognition() {
+    const r = recognition.current;
+    if (r) {
+      r.onresult = null;
+      r.onend = null;
+      r.onerror = null;
+      r.abort();
+    }
+    recognition.current = null;
+    finalText.current = "";
+    setListening(false);
+  }
+
   function submitAnswer() {
     const text = draft.trim();
     if (!text || status !== "answering") return;
-    recognition.current?.stop();
+    discardRecognition();
     window.speechSynthesis?.cancel();
     const next: Turn[] = [...turns, { role: "candidate", text }];
     setTurns(next);
@@ -318,7 +334,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   async function clarify(message: string) {
     const last = turns[turns.length - 1];
     if (!message || last?.role !== "interviewer" || status !== "answering") return;
-    recognition.current?.stop();
+    discardRecognition();
     window.speechSynthesis?.cancel();
     setClarifyMode(false);
     setDraft("");
