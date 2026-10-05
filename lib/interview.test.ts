@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   baseDifficulty,
+  formatTranscript,
+  MAX_CLARIFICATIONS,
+  validateClarification,
   decideNext,
   difficultyFor,
   parseHistory,
@@ -142,5 +145,29 @@ describe("parseHistory", () => {
   });
   it("rejects oversized history", () => {
     expect(() => parseHistory(Array(40).fill(a))).toThrow();
+  });
+});
+
+describe("clarifications", () => {
+  const withClar = (n: number): Turn[] => [
+    { ...(q("new_topic") as Extract<Turn, { role: "interviewer" }>), clarifications: Array(n).fill({ ask: "What do you mean?", reply: "Think of a recent project." }) },
+  ];
+
+  it("keeps clarifications when parsing history", () => {
+    const parsed = parseHistory(withClar(1));
+    expect(parsed[0].role === "interviewer" && parsed[0].clarifications).toHaveLength(1);
+  });
+  it("rejects more than the per-question cap", () => {
+    expect(() => parseHistory(withClar(MAX_CLARIFICATIONS + 1))).toThrow();
+  });
+  it("shows clarifications to the model in the transcript", () => {
+    const text = formatTranscript(withClar(1));
+    expect(text).toContain("asked for clarification");
+    expect(text).toContain("Think of a recent project.");
+  });
+  it("validates the clarification reply", () => {
+    expect(validateClarification({ reply: "Sure, think of a project." })).toBe("Sure, think of a project.");
+    expect(() => validateClarification({ reply: "" })).toThrow();
+    expect(() => validateClarification({ reply: "Hi [Name]" })).toThrow();
   });
 });

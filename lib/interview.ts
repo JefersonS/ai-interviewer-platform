@@ -3,10 +3,12 @@ import type { ChatMessage } from "./llm";
 
 export const TOTAL_QUESTIONS = 7; // spec minimum is 6; one spare slot
 export const MIN_FOLLOW_UPS = 2;
+export const MAX_CLARIFICATIONS = 2; // per question
 
 export type QuestionKind = "new_topic" | "follow_up";
 export type Difficulty = 1 | 2 | 3 | 4;
 export type Assessment = "strong" | "adequate" | "weak";
+export type Clarification = { ask: string; reply: string };
 
 export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
   1: "warm-up: background, motivation, simple definitions",
@@ -25,6 +27,7 @@ export type Turn =
       references: string;
       difficulty: Difficulty;
       assessment: Assessment | null; // model's rating of the previous answer
+      clarifications?: Clarification[]; // side exchanges about this question
     }
   | { role: "candidate"; text: string };
 
@@ -140,7 +143,14 @@ export function validateEvaluation(raw: unknown): Evaluation {
 
 export function formatTranscript(history: Turn[]): string {
   return history
-    .map((t) => `${t.role === "interviewer" ? "Interviewer" : "Candidate"}: ${t.text}`)
+    .flatMap((t) => {
+      if (t.role === "candidate") return [`Candidate: ${t.text}`];
+      const side = (t.clarifications ?? []).flatMap((c) => [
+        `Candidate (asked for clarification): ${c.ask}`,
+        `Interviewer (clarified): ${c.reply}`,
+      ]);
+      return [`Interviewer: ${t.text}`, ...side];
+    })
     .join("\n");
 }
 
@@ -184,6 +194,26 @@ Write the next turn.`
   ];
 }
 
+export function validateClarification(raw: unknown): string {
+  const reply = str((raw as Record<string, unknown>)?.reply, "reply", 500);
+  if (/\[[^\]]*\]/.test(reply)) throw new Error("no [placeholders] in spoken text");
+  return reply;
+}
+
+export function clarifyPrompt(job: Job, history: Turn[], message: string): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: `You are the interviewer for the role "${job.title}". The candidate is asking about your most recent question.
+Reply in at most 2 short spoken sentences: rephrase it more simply, or add a little context or a small example, depending on what they asked.
+Do not hint at the ideal answer and do not ask a new question; end by inviting them to answer.
+${SAFETY}
+Reply with only JSON: {"reply": string}`,
+    },
+    { role: "user", content: `Transcript so far:\n${formatTranscript(history)}\n\nThe candidate asks: ${message}` },
+  ];
+}
+
 export function evaluationPrompt(job: Job, history: Turn[]): ChatMessage[] {
   return [
     {
@@ -197,6 +227,12 @@ Reply with only JSON: {"strengths": [1-4 short strings], "concerns": [1-4 short 
 }
 
 // Server-side check of what the browser sent us.
+function parseClarifications(raw: unknown): Clarification[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.length > MAX_CLARIFICATIONS) throw new Error("too many clarifications");
+  return raw.map((c) => ({ ask: str(c?.ask, "ask", 500), reply: str(c?.reply, "reply", 800) }));
+}
+
 export function parseHistory(raw: unknown): Turn[] {
   if (!Array.isArray(raw) || raw.length > TOTAL_QUESTIONS * 2) throw new Error("invalid history");
   return raw.map((t, i) => {
@@ -205,6 +241,6 @@ export function parseHistory(raw: unknown): Turn[] {
     const text = str(t.text, "text", 2000);
     if (expected === "candidate") return { role: "candidate", text };
     const q = validateQuestion({ ...t, question: text }, null);
-    return { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment };
+    return { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, clarifications: parseClarifications(t.clarifications) };
   });
 }
