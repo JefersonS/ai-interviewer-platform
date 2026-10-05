@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Job } from "@/lib/jobs";
-import { TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
+import { MAX_CLARIFICATIONS, TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
 import { CLOSING_LINE, parseSaved, storageKey, type Saved } from "@/lib/session";
 import { fixTechTerms } from "@/lib/glossary";
 import { pickEnglishVoice } from "@/lib/voice";
@@ -37,6 +37,8 @@ async function post<T>(url: string, body: unknown): Promise<T> {
 const btn =
   "transition active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40";
 const primaryBtn = `${btn} rounded-full bg-indigo-600 px-5 py-2.5 font-medium text-white hover:bg-indigo-500`;
+const chip =
+  "rounded-full border border-zinc-300 px-3 py-1 text-xs transition hover:border-indigo-500 hover:bg-indigo-50 hover:text-indigo-700 active:scale-95 focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-zinc-700 dark:hover:bg-indigo-950 dark:hover:text-indigo-200";
 const ghostBtn = `${btn} rounded-full border border-zinc-300 px-5 py-2.5 font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800`;
 
 function Icon({ d, className = "h-5 w-5" }: { d: string; className?: string }) {
@@ -100,6 +102,8 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [clarifyMode, setClarifyMode] = useState(false);
+  const [pendingAsk, setPendingAsk] = useState<string | null>(null);
   const router = useRouter();
   const [hasSaved, setHasSaved] = useState(false);
   const canListen = useSyncExternalStore(
@@ -311,6 +315,44 @@ export default function InterviewRoom({ job }: { job: Job }) {
     advance(next);
   }
 
+  async function clarify(message: string) {
+    const last = turns[turns.length - 1];
+    if (!message || last?.role !== "interviewer" || status !== "answering") return;
+    recognition.current?.stop();
+    window.speechSynthesis?.cancel();
+    setClarifyMode(false);
+    setDraft("");
+    setError("");
+    setPendingAsk(message);
+    setStatus("thinking");
+    try {
+      const data = await post<{ reply: string }>("/api/interview/clarify", { jobId: job.id, history: turns, message });
+      const updated: Turn[] = turns.map((t, i) =>
+        i === turns.length - 1 && t.role === "interviewer"
+          ? { ...t, clarifications: [...(t.clarifications ?? []), { ask: message, reply: data.reply }] }
+          : t,
+      );
+      setTurns(updated);
+      persist(updated, null);
+      setPendingAsk(null);
+      speak(data.reply, () => setStatus("answering"));
+    } catch (e) {
+      setPendingAsk(null);
+      setDraft(message); // give the text back so nothing is lost
+      setError((e as Error).message);
+      setStatus("answering");
+    }
+  }
+
+  function submit() {
+    if (clarifyMode) void clarify(draft.trim());
+    else submitAnswer();
+  }
+
+  const lastTurn = turns[turns.length - 1];
+  const clarificationsUsed = lastTurn?.role === "interviewer" ? (lastTurn.clarifications?.length ?? 0) : 0;
+  const canClarify = status === "answering" && lastTurn?.role === "interviewer" && clarificationsUsed < MAX_CLARIFICATIONS;
+
   const answered = turns.filter((t) => t.role === "candidate").length;
   const inProgress = status !== "ready" && status !== "loading";
   const lastIdx = turns.length - 1;
@@ -386,12 +428,21 @@ export default function InterviewRoom({ job }: { job: Job }) {
         {inProgress && (
           <div className="space-y-4">
             {turns.map((t, i) => (
-              <Bubble
-                key={i}
-                turn={t}
-                onReplay={t.role === "interviewer" && i === lastIdx && status === "answering" ? () => speak(t.text, () => setStatus("answering")) : undefined}
-              />
+              <Fragment key={i}>
+                <Bubble
+                  turn={t}
+                  onReplay={t.role === "interviewer" && i === lastIdx && status === "answering" ? () => speak(t.text, () => setStatus("answering")) : undefined}
+                />
+                {t.role === "interviewer" &&
+                  (t.clarifications ?? []).map((c, j) => (
+                    <Fragment key={j}>
+                      <Bubble turn={{ role: "candidate", text: c.ask }} />
+                      <Bubble turn={{ role: "interviewer", text: c.reply }} />
+                    </Fragment>
+                  ))}
+              </Fragment>
             ))}
+            {pendingAsk && <Bubble turn={{ role: "candidate", text: pendingAsk }} />}
             {closing && <Bubble turn={{ role: "interviewer", text: CLOSING_LINE }} />}
             {(status === "thinking" || status === "evaluating") && <Typing label={stateLabel[status] ?? ""} />}
             {status === "error" && (
@@ -411,6 +462,34 @@ export default function InterviewRoom({ job }: { job: Job }) {
       {inProgress && status !== "error" && (
         <div className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
           {error && <p className="mb-2 text-sm text-red-600">{error}</p>}
+          {canClarify && (
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-zinc-500">Not sure what&apos;s being asked?</span>
+              {clarifyMode ? (
+                <button onClick={() => setClarifyMode(false)} className={chip}>
+                  Cancel
+                </button>
+              ) : (
+                <>
+                  <button onClick={() => void clarify("Could you rephrase that?")} className={chip}>
+                    Rephrase it
+                  </button>
+                  <button onClick={() => void clarify("Can you give me an example?")} className={chip}>
+                    Give an example
+                  </button>
+                  <button
+                    onClick={() => {
+                      setClarifyMode(true);
+                      textarea.current?.focus();
+                    }}
+                    className={chip}
+                  >
+                    Ask something else
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           <div className={`flex items-end gap-2 rounded-3xl border bg-white p-2 transition dark:bg-zinc-900 ${listening ? "border-red-400 ring-2 ring-red-200 dark:ring-red-900" : "border-zinc-300 focus-within:border-indigo-500 dark:border-zinc-700"}`}>
             {canListen && (
               <button
@@ -431,15 +510,15 @@ export default function InterviewRoom({ job }: { job: Job }) {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  submitAnswer();
+                  submit();
                 }
               }}
               rows={1}
               disabled={status !== "answering"}
-              placeholder={status !== "answering" ? "Wait for the question..." : canListen ? "Tap the mic and speak, or type your answer" : "Type your answer"}
+              placeholder={status !== "answering" ? "Wait for the interviewer..." : clarifyMode ? "What would you like clarified?" : canListen ? "Tap the mic and speak, or type your answer" : "Type your answer"}
               className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 outline-none placeholder:text-zinc-400 disabled:opacity-50"
             />
-            <button onClick={submitAnswer} disabled={!draft.trim() || status !== "answering"} aria-label="Send answer" title="Send (Enter)" className={`${btn} shrink-0 rounded-full bg-indigo-600 p-3 text-white hover:bg-indigo-500`}>
+            <button onClick={submit} disabled={!draft.trim() || status !== "answering"} aria-label={clarifyMode ? "Send question" : "Send answer"} title="Send (Enter)" className={`${btn} shrink-0 rounded-full bg-indigo-600 p-3 text-white hover:bg-indigo-500`}>
               <Icon d={ICONS.send} />
             </button>
           </div>
