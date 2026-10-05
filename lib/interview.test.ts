@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  answerNotes,
   baseDifficulty,
+  evaluationPrompt,
   decideNext,
   difficultyFor,
   formatTranscript,
@@ -231,5 +233,28 @@ describe("clarifications", () => {
     expect(validateClarification({ reply: "Sure, think of a project." })).toBe("Sure, think of a project.");
     expect(() => validateClarification({ reply: "" })).toThrow();
     expect(() => validateClarification({ reply: "Hi [Name]" })).toThrow();
+  });
+});
+
+describe("evaluation prompt", () => {
+  const rated = (assessment: "strong" | "weak" | null, difficulty: 1 | 2 | 3 | 4): Turn[] => [
+    { ...(q("new_topic") as Extract<Turn, { role: "interviewer" }>), assessment, difficulty },
+    a,
+  ];
+
+  it("maps each rating to the answer it judged (the next question carries it)", () => {
+    const h = [...rated(null, 1), ...rated("strong", 2), ...rated("weak", 3)];
+    expect(answerNotes(h).split("\n")).toEqual([
+      "answer 1 (question difficulty 1 of 4): strong",
+      "answer 2 (question difficulty 2 of 4): weak",
+      "answer 3 (question difficulty 3 of 4): not rated",
+    ]);
+  });
+
+  it("gives the evaluator a score guide and the live ratings", () => {
+    const [system, user] = evaluationPrompt(job, [...rated(null, 1), ...rated("weak", 1)]);
+    expect(system.content).toContain("Score guide");
+    expect(system.content).toContain("Mostly vague answers must score 4 or below");
+    expect(user.content).toContain("answer 1 (question difficulty 1 of 4): weak");
   });
 });

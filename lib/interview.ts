@@ -29,6 +29,7 @@ export type Turn =
       difficulty: Difficulty;
       assessment: Assessment | null; // model's rating of the previous answer
       clarifications?: Clarification[]; // side exchanges about this question
+      source?: "fallback"; // set when the model failed and a bank question was used
     }
   | { role: "candidate"; text: string };
 
@@ -41,6 +42,7 @@ export type NextQuestion = {
   references: string;
   difficulty: Difficulty;
   assessment: Assessment | null;
+  source?: "fallback";
 };
 
 export type Evaluation = {
@@ -268,15 +270,37 @@ Reply with only JSON: {"reply": string}`,
   ];
 }
 
+const SCORE_GUIDE = `Score guide (be strict and use the whole range, do not default to the middle):
+1-2: almost nothing relevant, or no real attempt to answer
+3-4: mostly vague or generic, few concrete examples, clear gaps
+5-6: some real experience but shallow, or specific only in places
+7-8: solid: concrete examples, correct reasoning, handles tradeoffs
+9-10: exceptional: precise, deep, quantified results, anticipates edge cases
+Mostly vague answers must score 4 or below. Consistently specific, correct answers must score 7 or above.`;
+
+// The interviewer rated each answer live (the rating sits on the NEXT question), so the
+// evaluator gets those ratings and the difficulty each answer was given at.
+export function answerNotes(history: Turn[]): string {
+  const asked = history.filter((t): t is InterviewerTurn => t.role === "interviewer");
+  return asked
+    .map((t, i) => {
+      const rating = asked[i + 1]?.assessment;
+      return `answer ${i + 1} (question difficulty ${t.difficulty} of 4): ${rating ?? "not rated"}`;
+    })
+    .join("\n");
+}
+
 export function evaluationPrompt(job: Job, history: Turn[]): ChatMessage[] {
   return [
     {
       role: "system",
       content: `You evaluate a voice interview for the role "${job.title}". Focus areas: ${job.focusAreas.join("; ")}.
 Base every point on what was actually said. ${SAFETY}
+${SCORE_GUIDE}
+The interviewer rated each answer live; use these ratings as evidence. Answers to harder questions deserve more weight.
 Reply with only JSON: {"strengths": [1-4 short strings], "concerns": [1-4 short strings], "overall_score": integer 1-10, "summary": 2 sentences}`,
     },
-    { role: "user", content: `Transcript:\n${formatTranscript(history)}` },
+    { role: "user", content: `Live ratings:\n${answerNotes(history)}\n\nTranscript:\n${formatTranscript(history)}` },
   ];
 }
 
@@ -295,6 +319,6 @@ export function parseHistory(raw: unknown): Turn[] {
     const text = str(t.text, "text", 2000);
     if (expected === "candidate") return { role: "candidate", text };
     const q = validateQuestion({ ...t, question: text });
-    return { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, clarifications: parseClarifications(t.clarifications) };
+    return { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, clarifications: parseClarifications(t.clarifications), ...(t.source === "fallback" ? { source: "fallback" as const } : {}) };
   });
 }

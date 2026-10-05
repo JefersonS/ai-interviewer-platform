@@ -82,6 +82,9 @@ export function assertInvariants(scn: Scenario, r: Result) {
   expect(Number.isInteger(r.evaluation.overall_score)).toBe(true);
   expect(r.evaluation.overall_score).toBeGreaterThanOrEqual(1);
   expect(r.evaluation.overall_score).toBeLessThanOrEqual(10);
+  // Scores must separate good candidates from weak ones, not cluster in the middle.
+  if (scn.persona === "strong") expect(r.evaluation.overall_score).toBeGreaterThanOrEqual(6);
+  else expect(r.evaluation.overall_score).toBeLessThanOrEqual(5);
   expect(r.evaluation.strengths.length).toBeGreaterThan(0);
   expect(r.evaluation.concerns.length).toBeGreaterThan(0);
 
