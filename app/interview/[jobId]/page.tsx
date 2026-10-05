@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getJob } from "@/lib/jobs";
+import InterviewRoom from "./InterviewRoom";
 
 export default async function InterviewPage({
   params,
@@ -15,9 +16,7 @@ export default async function InterviewPage({
         &larr; All roles
       </Link>
       <h1 className="mt-4 text-2xl font-semibold">{job.title} interview</h1>
-      <p className="mt-2 text-zinc-600 dark:text-zinc-400">
-        Interview room coming next.
-      </p>
+      <InterviewRoom job={job} />
     </main>
   );
 }
