@@ -65,7 +65,7 @@ export default function DecisionPanel({ state, onClose, mode = "live" }: { state
           <h2 className="text-base font-semibold">{live ? "Decision panel" : "How the interviewer decided"}</h2>
           <p className="mt-0.5 text-xs text-zinc-500">{live ? "What the interviewer is tracking, and why it asked this." : "Topic coverage, pacing, and the reasoning behind each question."}</p>
         </div>
-        {live && (
+        {live && onClose && (
           <button onClick={onClose} className="rounded-full border border-zinc-300 px-3 py-1 text-xs transition hover:bg-zinc-100 active:scale-95 dark:border-zinc-700 dark:hover:bg-zinc-800 lg:hidden">
             Close
           </button>
