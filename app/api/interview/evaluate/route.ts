@@ -1,4 +1,4 @@
-import { guard } from "@/lib/guard";
+import { guard, readJsonBody } from "@/lib/guard";
 import { getJob } from "@/lib/jobs";
 import { evaluationPrompt, parseHistory, parseLastAnswer, TOTAL_QUESTIONS, validateEvaluation } from "@/lib/interview";
 import { chatJson, LlmError } from "@/lib/llm";
@@ -8,12 +8,9 @@ export async function POST(request: Request) {
   const blocked = guard(request);
   if (blocked) return blocked;
 
-  let body: { jobId?: unknown; history?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.value as { jobId?: unknown; history?: unknown };
 
   const job = typeof body.jobId === "string" ? getJob(body.jobId) : undefined;
   if (!job) return Response.json({ error: "unknown job" }, { status: 404 });

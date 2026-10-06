@@ -1,4 +1,4 @@
-import { guard } from "@/lib/guard";
+import { guard, readJsonBody } from "@/lib/guard";
 import { translationPrompt, validateEvaluation, validateTranslation } from "@/lib/interview";
 import { isLang } from "@/lib/languages";
 import { chatJson, LlmError } from "@/lib/llm";
@@ -10,12 +10,9 @@ export async function POST(request: Request) {
   const blocked = guard(request);
   if (blocked) return blocked;
 
-  let body: { language?: unknown; evaluation?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.value as { language?: unknown; evaluation?: unknown };
 
   if (!isLang(body.language) || body.language === "en") {
     return Response.json({ error: "language must be a supported language other than English" }, { status: 400 });

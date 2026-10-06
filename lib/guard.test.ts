@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clientIp, guard, resetRateLimits } from "./guard";
+import { clientIp, guard, readJsonBody, resetRateLimits } from "./guard";
 
 vi.mock("./logger", () => ({ log: vi.fn() }));
 
@@ -65,5 +65,52 @@ describe("clientIp", () => {
     expect(clientIp(req({ "x-real-ip": "9.9.9.9", "x-forwarded-for": "1.1.1.1" }))).toBe("9.9.9.9");
     expect(clientIp(req({ "x-forwarded-for": "1.1.1.1, 2.2.2.2" }))).toBe("1.1.1.1");
     expect(clientIp(req())).toBe("unknown");
+  });
+});
+
+// A body sent in pieces has no Content-Length header, which is exactly what the header check misses.
+const streamed = (chunks: string[]) =>
+  new Request("http://test.local/api", {
+    method: "POST",
+    body: new ReadableStream({
+      start(controller) {
+        for (const c of chunks) controller.enqueue(new TextEncoder().encode(c));
+        controller.close();
+      },
+    }),
+    duplex: "half",
+  } as RequestInit);
+
+describe("readJsonBody", () => {
+  it("parses a normal body", async () => {
+    const r = await readJsonBody(new Request("http://test.local/api", { method: "POST", body: JSON.stringify({ a: 1 }) }));
+    expect(r).toEqual({ ok: true, value: { a: 1 } });
+  });
+
+  it("stops a chunked upload that has no Content-Length once it passes the limit", async () => {
+    const piece = "x".repeat(40_000);
+    const request = streamed(['{"pad":"', piece, piece, piece, '"}']); // 120 KB in four chunks
+    expect(request.headers.get("content-length")).toBeNull();
+    const r = await readJsonBody(request, 100_000);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.response.status).toBe(413);
+  });
+
+  it("accepts a chunked body that stays under the limit", async () => {
+    const r = await readJsonBody(streamed(['{"a":', "[1,2,", "3]}"]), 100_000);
+    expect(r).toEqual({ ok: true, value: { a: [1, 2, 3] } });
+  });
+
+  it("still refuses on the header alone, without reading anything", async () => {
+    const r = await readJsonBody(new Request("http://test.local/api", { method: "POST", headers: { "content-length": "999999" }, body: "{}" }), 100_000);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.response.status).toBe(413);
+  });
+
+  it("answers 400 for invalid JSON or a missing body", async () => {
+    const bad = await readJsonBody(new Request("http://test.local/api", { method: "POST", body: "{nope" }));
+    expect(bad.ok === false && bad.response.status).toBe(400);
+    const none = await readJsonBody(new Request("http://test.local/api", { method: "POST" }));
+    expect(none.ok === false && none.response.status).toBe(400);
   });
 });

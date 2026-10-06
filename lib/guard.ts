@@ -94,3 +94,39 @@ export function resetRateLimits() {
   everyone.count = 0;
   everyone.resetAt = 0;
 }
+
+// Reads a JSON body while counting bytes, and stops as soon as the limit is passed. The
+// Content-Length header is not enough: a chunked upload has none, so it would be read in full.
+export async function readJsonBody(
+  request: Request,
+  maxBytes = MAX_BODY_BYTES,
+): Promise<{ ok: true; value: unknown } | { ok: false; response: Response }> {
+  const refuse = (error: string, status: number) => ({ ok: false as const, response: Response.json({ error }, { status }) });
+  if (Number(request.headers.get("content-length") ?? 0) > maxBytes) return refuse("request too large", 413);
+  if (!request.body) return refuse("invalid JSON body", 400);
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return refuse("request too large", 413);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return { ok: true, value: JSON.parse(new TextDecoder().decode(bytes)) };
+  } catch {
+    return refuse("invalid JSON body", 400);
+  }
+}

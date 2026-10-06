@@ -1,4 +1,4 @@
-import { guardHistory } from "@/lib/guard";
+import { guardHistory, readJsonBody } from "@/lib/guard";
 import { parseSessionRecord } from "@/lib/history";
 import { getJob } from "@/lib/jobs";
 import { log } from "@/lib/logger";
@@ -17,12 +17,9 @@ export async function POST(request: Request) {
   const owner = ownerFrom(request);
   if (!owner) return Response.json({ error: "missing or invalid x-owner-id" }, { status: 400 });
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return Response.json({ error: "invalid JSON body" }, { status: 400 });
-  }
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.value as unknown;
   let record;
   try {
     record = parseSessionRecord(body);
