@@ -26,12 +26,14 @@ npm run dev                     # http://localhost:3000
 Other commands:
 
 ```bash
-npm test             # offline tests, no API key needed (about 140 tests, free, a few seconds)
+npm test             # offline tests, no API key needed (about 200 tests, free, a few seconds)
 npm run test:live    # the same full conversations against the real model (costs cents, ~5 minutes)
 npm run build && npm start
 ```
 
-Environment variables (see `.env.example`): `OPENROUTER_API_KEY` (required), `OPENROUTER_MODEL` (optional, default `mistralai/mistral-small-3.2-24b-instruct`), `RATE_LIMIT_PER_IP` and `RATE_LIMIT_GLOBAL_PER_HOUR` (optional). Keys are read from the environment only and never committed.
+Environment variables (see `.env.example`): `OPENROUTER_API_KEY` (required), `OPENROUTER_MODEL` (optional, default `mistralai/mistral-small-3.2-24b-instruct`), `DATABASE_URL` (optional, a Postgres connection string: turns on the saved history, see below), `RATE_LIMIT_PER_IP`, `RATE_LIMIT_GLOBAL_PER_HOUR` and `RATE_LIMIT_HISTORY_PER_IP` (optional). Keys are read from the environment only and never committed.
+
+Without `DATABASE_URL` the app works fully; in development the history uses an in-memory store (lost on restart), and in production the history pages say it is not configured.
 
 ## How the interviewer decides (reasoning and question selection)
 
@@ -111,6 +113,25 @@ Everything except "skills" and the one-line reasoning is computed by code from t
 
 The final answer has no next question to carry its rating or skills, so the evaluation call provides them; the panel fills in the last bar and the skills when the evaluation arrives and shows "Interview complete". The summary page shows the same information as a read-only **How the interviewer decided** section, with every question's reasoning, so the whole trail stays visible after the interview ends.
 
+## History, replay and analytics
+
+Every finished interview is saved to **Postgres** (Railway) when the evaluation arrives. This is a best-effort background save: if it fails, the interview is unaffected and the summary page offers "Save to history".
+
+- **`/history`** lists this browser's interviews, with a role filter and a score trend chart across sessions. Each row shows the session's metrics.
+- **`/history/[id]`** replays an interview step by step (previous, next, play, scrubber). The decision panel shows its state at each step, so you can watch the coverage, ratings and skills build up.
+
+| Metric | How it is computed |
+|---|---|
+| Duration | start of the interview to the evaluation arriving |
+| Talk share | the candidate's share of all words spoken (**by words**: audio is not recorded, so speaking time cannot be measured) |
+| Answer time | question appearing to the answer being sent; it includes the voice reading the question. Absent for sessions saved before timestamps existed |
+| Topic coverage | focus areas asked about, out of the role's total |
+| Score, ratings, difficulty | the evaluation's score, how many answers were rated strong, adequate or weak, and the average difficulty reached |
+
+**Privacy.** There are no accounts, and a public URL must not let anyone read other people's transcripts. Each browser creates a random anonymous **owner id** (kept in browser storage) and sends it in a request header; the server only returns sessions saved under that id, and answers 404 for anyone else's. It is a capability rather than real authentication: anyone who obtained the id could read that history, which is why it is a long random value and never goes in a URL. Clearing browser storage loses access to the history (the rows stay in the database).
+
+**Storage details.** One table, created automatically on first use (`lib/sessionStore.ts`), with the full interview and its metrics as JSON plus a few indexed columns (owner, role, time, score). The save is an upsert by id, so retries are safe, and an id owned by another owner is refused with 409. Tests run the real SQL on `pg-mem`, an in-process Postgres emulator, because the hosted database is not reachable from a laptop; the same routes were also smoke-tested against the real database after deploying.
+
 ## Reliability of the model calls
 
 Every model call is treated as unreliable (`lib/llm.ts`):
@@ -118,7 +139,7 @@ Every model call is treated as unreliable (`lib/llm.ts`):
 - 25 s timeout, 3 attempts, exponential backoff with jitter, honouring `Retry-After`; 429 and 5xx are retried, other 4xx fail fast
 - JSON is extracted from fenced or chatty replies, then validated by a caller-supplied function
 - at most 4 model calls in flight per process
-- the server is **stateless**: the browser sends the history each turn and the server re-validates it, so requests are idempotent; the browser saves progress after every turn, so a reload resumes the interview
+- the interview server is **stateless**: the browser sends the history each turn and the server re-validates it, so requests are idempotent; the browser saves progress after every turn, so a reload resumes the interview. Only finished interviews go to the database
 - structured JSON logs (one line per call with label, attempt and latency)
 - the candidate's speech is treated as data, never as instructions; the name is restricted to letters before it enters a prompt
 - public deploy protection (`lib/guard.ts`): 60 model calls per IP per 15 minutes, 600 per hour overall, 100 KB request cap (enforced in production only)
@@ -136,11 +157,14 @@ app/
   page.tsx                         job list
   interview/[jobId]/               interview room (chat UI), decision panel, and summary page
   api/interview/{next,clarify,evaluate,translate}/route.ts
+  api/sessions/                    save and read finished interviews
+  history/                         history list and replay pages
 lib/
   interview.ts   rules: policy, pacing, prompts, validators   (the core)
   llm.ts         OpenRouter client: retries, repair, concurrency
   fallback.ts, questions.ts, questions.pt.ts   fallback question bank
   guard.ts       rate limits and size cap
+  history.ts, metrics.ts, sessionStore.ts, owner.ts, historyClient.ts   saved history: validation, metrics, Postgres store, owner id
   panel.ts       what the decision panel shows (pure, unit-tested)
   glossary.ts, voice.ts, languages.ts, candidate.ts, session.ts, jobs.ts, logger.ts
 tests/conversations/   full-conversation tests (offline and live)
@@ -160,7 +184,7 @@ Hosted on Railway. The service is deployed from this folder with the Railway CLI
 railway up --service ai-interviewer
 ```
 
-`OPENROUTER_API_KEY` is set as a Railway variable. (Auto-deploy from GitHub needs admin access to the repository's organization, so the CLI upload is used instead.)
+`OPENROUTER_API_KEY` is set as a Railway variable, and `DATABASE_URL` is a reference to the project's Postgres service (`${{Postgres.DATABASE_URL}}`), so the app reaches the database over Railway's private network. (Auto-deploy from GitHub needs admin access to the repository's organization, so the CLI upload is used instead.)
 
 ## Decisions and tradeoffs
 
@@ -168,7 +192,9 @@ railway up --service ai-interviewer
 |---|---|---|
 | Rules in code, words from the model | A cheap model cannot be trusted to count, follow quotas or keep a format | More code than a single prompt; the model has less freedom |
 | Browser speech recognition and synthesis | Free, no extra key, works instantly | Chrome and Edge only, no custom vocabulary, quality varies by voice and accent |
-| Stateless server, session in the browser | Simplest thing that meets "save the session"; makes retries safe | Sessions are per browser and device; no history page |
+| Stateless interview server; finished interviews in Postgres | Retries stay safe, and the database only holds what the history needs | In-progress interviews live in the browser only |
+| History private per browser through an anonymous owner id | A public deploy must not expose everyone's transcripts, and accounts were out of scope | Not real authentication; clearing browser storage loses access to the history |
+| Talk share by words, not time | Audio is not recorded, so spoken time cannot be measured | It is a proxy: someone who speaks slowly and someone who speaks fast look the same |
 | Fixed question bank as fallback | Interview always continues | Generic questions when it triggers |
 | Typewriter reveal instead of token streaming | Our checks need the whole reply before anything is shown, so real streaming would mean taking text back when validation fails | Feels like streaming but does not reduce the wait for the model |
 | In-memory rate limit | No infrastructure to run | Resets on redeploy; not shared if more than one instance runs |
@@ -178,7 +204,7 @@ railway up --service ai-interviewer
 - Speech-to-text mishears technical terms; the glossary only covers the ones it was taught.
 - Each question takes about 3 to 9 seconds (cheap model, plus retries when it breaks a rule).
 - The interviewer's rating of answers and the final score come from the same cheap model. They separate strong from weak candidates reliably in tests, but they are not calibrated against human judgement.
-- Sessions live in one browser's storage. Clearing it deletes the interview.
+- An unfinished interview lives only in one browser's storage; clearing it deletes it. Finished ones are in the database but can only be opened from the browser that owns them.
 - The UI text (buttons, hints) is English only, even when the interview is in Portuguese.
 
 ## With more time, and things left out on purpose
@@ -191,9 +217,8 @@ railway up --service ai-interviewer
 
 **Better transcription.** The real fix for the points above is a speech service that accepts a vocabulary hint (Whisper-class, Deepgram, AssemblyAI) fed with the role's terms. It costs a few cents per interview and a second API key, and the text would appear after each answer instead of live.
 
-**Server-side storage and the remaining stretch goals.** The decision panel is built (see above). Not done, in order of planned effort:
-1. **Job-specific question packs:** the fallback bank is a first version (four levels per area). Behavioural versus technical categories and model selection from the pack are not built.
-2. **Video mode:** camera preview and a call-style layout; voice stays the input.
-3. **Replay and analytics:** needs a database (Postgres on Railway) and timestamps per turn for duration and talk ratio.
+**Stretch goals.** The decision panel and the history with replay and analytics are built (see above). Two were left out on purpose:
+1. **Job-specific question packs (not built, deliberately).** The idea is structured technical and behavioral question banks per role, with the model choosing from them. It was skipped because it would constrain the model on new topics, trading the natural, adaptive conversation (which is the point of the exercise) for consistency, and because the fallback bank already covers the safety-net use. The fallback bank is the first step toward it.
+2. **Video mode (not built, deliberately).** A camera preview and a call-style layout, with voice staying the input. It adds interface and permission handling but does not change anything the interview evaluates. Saving the video, described above, is the part that would make it worthwhile.
 
-Also: shared rate limiting (Redis), authentication, a monitored spending cap on the key, and calibrating the scoring against human-labelled interviews.
+Also: accounts so history survives clearing browser storage, shared rate limiting (Redis), authentication, a monitored spending cap on the key, and calibrating the scoring against human-labelled interviews.
