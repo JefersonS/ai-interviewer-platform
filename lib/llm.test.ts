@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { chatJson, extractJson, LlmError } from "./llm";
+import { chatJson, extractJson, isTransient, LlmError } from "./llm";
 
 vi.mock("./logger", () => ({ log: vi.fn() }));
 
@@ -106,5 +106,84 @@ describe("chatJson", () => {
     });
     await Promise.all(Array.from({ length: 10 }, () => chatJson({ ...base, fetchImpl })));
     expect(peak).toBe(4);
+  });
+});
+
+describe("token cap and deadline", () => {
+  it("sends max_tokens, 800 by default and an override when given", async () => {
+    const bodies: { max_tokens: number }[] = [];
+    const fetchImpl = vi.fn().mockImplementation(async (_url: string, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body));
+      return reply('{"ok": true}');
+    });
+    await chatJson({ ...base, fetchImpl });
+    await chatJson({ ...base, fetchImpl, maxTokens: 300 });
+    expect(bodies.map((b) => b.max_tokens)).toEqual([800, 300]);
+  });
+
+  it("treats a reply cut off at the token limit as invalid output and retries", async () => {
+    const cut = new Response(JSON.stringify({ choices: [{ message: { content: '{"ok": tr' }, finish_reason: "length" }] }), { status: 200 });
+    const fetchImpl = vi.fn().mockResolvedValueOnce(cut).mockResolvedValueOnce(reply('{"ok": true}'));
+    await expect(chatJson({ ...base, fetchImpl })).resolves.toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops at the deadline when a request hangs, instead of waiting out the attempt timeout", async () => {
+    const hang = vi.fn().mockImplementation(
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))),
+    );
+    const started = Date.now();
+    const err = await chatJson({ ...base, fetchImpl: hang, deadlineMs: 300 }).catch((e) => e);
+    expect(err).toBeInstanceOf(LlmError);
+    expect(err.kind).toBe("timeout");
+    expect(Date.now() - started).toBeLessThan(1500); // the attempt timeout alone is 25 s
+    expect(hang).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start a retry that cannot finish in the time left", async () => {
+    let t = 0;
+    const slow = vi.fn().mockImplementation(async () => {
+      t += 4000;
+      return reply("not json");
+    });
+    const err = await chatJson({ ...base, fetchImpl: slow, now: () => t, deadlineMs: 6000 }).catch((e) => e);
+    expect(err.kind).toBe("timeout");
+    expect(slow).toHaveBeenCalledTimes(1);
+  });
+
+  it("still uses all its attempts when there is plenty of time", async () => {
+    let t = 0;
+    const quick = vi.fn().mockImplementation(async () => {
+      t += 500;
+      return reply("not json");
+    });
+    const err = await chatJson({ ...base, fetchImpl: quick, now: () => t, deadlineMs: 30_000 }).catch((e) => e);
+    expect(err.kind).toBe("invalid_output");
+    expect(quick).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops waiting for a free model slot once the deadline passes, without calling the model", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const held = vi.fn().mockImplementation(async () => {
+      await gate;
+      return reply('{"ok": true}');
+    });
+    const running = Array.from({ length: 4 }, () => chatJson({ ...base, fetchImpl: held, deadlineMs: 5_000 }));
+    await new Promise((r) => setTimeout(r, 20)); // let the four calls take every slot
+
+    const extra = vi.fn();
+    const err = await chatJson({ ...base, fetchImpl: extra, deadlineMs: 150 }).catch((e) => e);
+    expect(err.kind).toBe("timeout");
+    expect(extra).not.toHaveBeenCalled();
+
+    open();
+    await Promise.all(running);
+  });
+
+  it("counts running out of time as transient, so a question falls back instead of failing", () => {
+    expect(isTransient(new LlmError("out of time", "timeout"))).toBe(true);
+    expect(isTransient(new LlmError("no key", "config"))).toBe(false);
   });
 });

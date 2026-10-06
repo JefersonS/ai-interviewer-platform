@@ -30,6 +30,8 @@ export async function POST(request: Request) {
     const { evaluation, lastAnswer } = await chatJson({
       label: `evaluate:${job.id}`,
       messages: evaluationPrompt(job, history),
+      deadlineMs: 40_000,
+      maxTokens: 900, // strengths, concerns, a summary and the final-answer rating
       validate: (raw) => ({ evaluation: validateEvaluation(raw), lastAnswer: parseLastAnswer(raw, finalAnswer) }),
     });
     return Response.json({ evaluation, lastAnswer });

@@ -42,6 +42,8 @@ export async function POST(request: Request) {
     const question = await chatJson({
       label: `next_question:${job.id}:q${history.length / 2 + 1}`,
       messages: questionPrompt(job, history, decision, candidate),
+      deadlineMs: 30_000, // past this the candidate gets a bank question instead of waiting longer
+      maxTokens: 600, // a reply is about 250 tokens; Portuguese needs a bit more
       validate: (raw) =>
         validateQuestion(raw, {
           required: requiredKind(decision),

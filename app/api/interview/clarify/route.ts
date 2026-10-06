@@ -45,6 +45,8 @@ export async function POST(request: Request) {
     const reply = await chatJson({
       label: `clarify:${job.id}:q${(history.length + 1) / 2}`,
       messages: clarifyPrompt(job, history, message, candidate),
+      deadlineMs: 25_000,
+      maxTokens: 300, // two short sentences
       validate: validateClarification,
     });
     return Response.json({ reply });

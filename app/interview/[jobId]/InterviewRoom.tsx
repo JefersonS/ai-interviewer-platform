@@ -29,12 +29,23 @@ type Recognition = {
   abort(): void;
 };
 
-async function post<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+// The browser stops waiting a little after the server's own deadline (30 s for a question,
+// 40 s for the evaluation), so a stuck request becomes an error with a Retry button.
+async function post<T>(url: string, body: unknown, timeoutMs = 45_000): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
+      throw new Error("The interviewer is taking too long. Please try again.");
+    }
+    throw e;
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
   return data as T;
@@ -296,7 +307,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
       setStatus("evaluating");
       setError("");
       try {
-        const data = await post<{ evaluation: Evaluation; lastAnswer?: LastAnswer }>("/api/interview/evaluate", { jobId: job.id, history });
+        const data = await post<{ evaluation: Evaluation; lastAnswer?: LastAnswer }>("/api/interview/evaluate", { jobId: job.id, history }, 60_000);
         setEvaluation(data.evaluation);
         setLastAnswer(data.lastAnswer);
         persist(history, data.evaluation, data.lastAnswer);

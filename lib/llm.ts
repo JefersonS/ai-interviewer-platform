@@ -5,18 +5,18 @@ export type ChatMessage = { role: "system" | "user" | "assistant"; content: stri
 export class LlmError extends Error {
   constructor(
     message: string,
-    readonly kind: "config" | "http" | "invalid_output" | "network",
+    readonly kind: "config" | "http" | "invalid_output" | "network" | "timeout",
     readonly status?: number,
   ) {
     super(message);
   }
 }
 
-// True for failures that may clear up on their own (bad output, network, rate limit,
-// provider outage). False for ones that need a human, like a missing or rejected key.
+// True for failures that may clear up on their own (bad output, network, running out of time,
+// rate limit, provider outage). False for ones that need a human, like a missing or rejected key.
 export function isTransient(e: unknown): boolean {
   if (!(e instanceof LlmError)) return false;
-  if (e.kind === "invalid_output" || e.kind === "network") return true;
+  if (e.kind === "invalid_output" || e.kind === "network" || e.kind === "timeout") return true;
   return e.kind === "http" && (e.status === 429 || (e.status ?? 0) >= 500);
 }
 
@@ -26,12 +26,18 @@ type Options<T> = {
   validate: (raw: unknown) => T;
   label: string;
   maxAttempts?: number;
-  timeoutMs?: number;
+  timeoutMs?: number; // per attempt
+  deadlineMs?: number; // for the whole call: waiting for a slot, every attempt, and the pauses between them
+  maxTokens?: number; // cap on the reply length
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 };
 
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_DEADLINE_MS = 30_000;
+const DEFAULT_MAX_TOKENS = 800;
+const MIN_ATTEMPT_MS = 3_000; // starting a retry with less time left than this cannot finish
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // Caps in-flight model calls for the whole server process.
@@ -39,12 +45,24 @@ const MAX_CONCURRENT = 4;
 let active = 0;
 const waiting: Array<() => void> = [];
 
-async function acquire() {
+// Waits for a free slot, but never longer than the caller can afford.
+function acquire(maxWaitMs: number): Promise<void> {
   if (active < MAX_CONCURRENT) {
     active++;
-    return;
+    return Promise.resolve();
   }
-  await new Promise<void>((resolve) => waiting.push(resolve));
+  return new Promise<void>((resolve, reject) => {
+    const turn = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      const i = waiting.indexOf(turn);
+      if (i >= 0) waiting.splice(i, 1);
+      reject(new LlmError("every model slot stayed busy", "timeout"));
+    }, Math.max(0, maxWaitMs));
+    waiting.push(turn);
+  });
 }
 
 function release() {
@@ -76,16 +94,24 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
 
   const maxAttempts = opts.maxAttempts ?? 3;
   const timeoutMs = opts.timeoutMs ?? 25_000;
+  const deadlineMs = opts.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const doFetch = opts.fetchImpl ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
+  const now = opts.now ?? Date.now;
+  const deadlineAt = now() + deadlineMs; // the clock starts before queueing
   // Grows on invalid output: the model sees what it got wrong instead of repeating it.
   let messages = opts.messages;
 
-  await acquire();
+  await acquire(deadlineMs);
   try {
     let lastError: LlmError = new LlmError("no attempts made", "network");
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const started = Date.now();
+      const remaining = deadlineAt - now();
+      if (remaining <= 0 || (attempt > 1 && remaining < MIN_ATTEMPT_MS)) {
+        lastError = new LlmError("model call ran out of time", "timeout");
+        break;
+      }
+      const started = now();
       let retryAfter: string | null = null;
       let rejected: string | null = null;
       try {
@@ -97,8 +123,9 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
             messages,
             response_format: { type: "json_object" },
             temperature: 0.4,
+            max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
           }),
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: AbortSignal.timeout(Math.min(timeoutMs, remaining)),
         });
 
         if (!res.ok) {
@@ -108,11 +135,13 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
           if (!retryable) throw Object.assign(lastError, { fatal: true });
         } else {
           const body = await res.json();
-          const content = body?.choices?.[0]?.message?.content;
+          const choice = body?.choices?.[0];
+          const content = choice?.message?.content;
           if (typeof content !== "string") throw new Error("response had no message content");
           rejected = content;
+          if (choice?.finish_reason === "length") throw new Error("reply was cut off at the token limit");
           const value = opts.validate(extractJson(content));
-          log("info", "llm.ok", { label: opts.label, attempt, ms: Date.now() - started, model });
+          log("info", "llm.ok", { label: opts.label, attempt, ms: now() - started, model });
           return value;
         }
       } catch (err) {
@@ -138,11 +167,19 @@ export async function chatJson<T>(opts: Options<T>): Promise<T> {
         attempt,
         kind: lastError.kind,
         reason: lastError.message,
-        ms: Date.now() - started,
+        ms: now() - started,
       });
-      if (attempt < maxAttempts) await sleep(backoffMs(attempt, retryAfter));
+      if (attempt < maxAttempts) {
+        const pause = backoffMs(attempt, retryAfter);
+        // No point pausing if the next attempt would not have enough time left to finish.
+        if (deadlineAt - now() - pause < MIN_ATTEMPT_MS) {
+          lastError = new LlmError("model call ran out of time", "timeout");
+          break;
+        }
+        await sleep(pause);
+      }
     }
-    log("error", "llm.failed", { label: opts.label, kind: lastError.kind, reason: lastError.message });
+    log("error", "llm.failed", { label: opts.label, kind: lastError.kind, reason: lastError.message, ms: now() - (deadlineAt - deadlineMs) });
     throw lastError;
   } finally {
     release();

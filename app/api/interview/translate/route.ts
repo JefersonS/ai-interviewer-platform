@@ -30,6 +30,8 @@ export async function POST(request: Request) {
     const evaluation = await chatJson({
       label: `translate:${language}`,
       messages: translationPrompt(original, language),
+      deadlineMs: 40_000,
+      maxTokens: 900,
       validate: (raw) => validateTranslation(raw, original),
     });
     return Response.json({ evaluation });
