@@ -119,6 +119,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const mutedRef = useRef(false);
   const closingSpoken = useRef(false);
   const closingDone = useRef<Promise<void>>(Promise.resolve());
+  const stopSpeech = useRef<(() => void) | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
 
@@ -142,8 +143,10 @@ export default function InterviewRoom({ job }: { job: Job }) {
     const finish = () => {
       if (finished) return;
       finished = true;
+      stopSpeech.current = null;
       then();
     };
+    stopSpeech.current = finish;
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "en-US";
     const voice = pickEnglishVoice(window.speechSynthesis.getVoices());
@@ -254,7 +257,9 @@ export default function InterviewRoom({ job }: { job: Job }) {
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  }, [draft]);
+    // Dictation sets the text programmatically, which leaves the scroll at the top.
+    if (listening) el.scrollTop = el.scrollHeight;
+  }, [draft, listening]);
 
   function start(resume: boolean) {
     if (!resume || !session.current) {
@@ -266,6 +271,12 @@ export default function InterviewRoom({ job }: { job: Job }) {
     setClosing(false);
     closingSpoken.current = false;
     advance(session.current.turns);
+  }
+
+  // Calls finish directly as well: Chrome sometimes never fires the cancel event.
+  function stopSpeaking() {
+    window.speechSynthesis?.cancel();
+    stopSpeech.current?.();
   }
 
   function toggleMute() {
@@ -478,6 +489,14 @@ export default function InterviewRoom({ job }: { job: Job }) {
       {inProgress && status !== "error" && (
         <div className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
           {error && <p className="mb-2 text-sm text-red-600">{error}</p>}
+          {status === "speaking" && (
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-xs text-zinc-500">Interviewer is speaking</span>
+              <button onClick={stopSpeaking} className={chip}>
+                Stop and answer
+              </button>
+            </div>
+          )}
           {canClarify && (
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className="text-xs text-zinc-500">Not sure what&apos;s being asked?</span>
