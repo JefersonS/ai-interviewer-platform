@@ -319,6 +319,37 @@ Reply with only JSON: {"strengths": [1-4 short strings], "concerns": [1-4 short 
   ];
 }
 
+// View-only translation of a finished evaluation. The English original stays the saved
+// record, so this keeps the score and the number of items exactly as they were.
+export function translationPrompt(evaluation: Evaluation, language: keyof typeof LANGUAGES): ChatMessage[] {
+  const { strengths, concerns, summary } = evaluation;
+  return [
+    {
+      role: "system",
+      content: `Translate the text values of this interview evaluation into ${LANGUAGES[language].promptName}.
+Keep the same number of items in each list, the same meaning and tone, and add nothing.
+Reply with only JSON: {"strengths": [strings], "concerns": [strings], "summary": string}`,
+    },
+    { role: "user", content: JSON.stringify({ strengths, concerns, summary }) },
+  ];
+}
+
+export function validateTranslation(raw: unknown, original: Evaluation): Evaluation {
+  const r = raw as Record<string, unknown>;
+  const list = (v: unknown, field: string, expected: number) => {
+    if (!Array.isArray(v) || v.length !== expected || v.some((x) => typeof x !== "string" || x.trim() === "")) {
+      throw new Error(`${field} must be an array of ${expected} non-empty strings`);
+    }
+    return (v as string[]).map((x) => x.trim());
+  };
+  return {
+    strengths: list(r?.strengths, "strengths", original.strengths.length),
+    concerns: list(r?.concerns, "concerns", original.concerns.length),
+    overall_score: original.overall_score,
+    summary: str(r?.summary, "summary", 800),
+  };
+}
+
 // Server-side check of what the browser sent us.
 function parseClarifications(raw: unknown): Clarification[] {
   if (raw === undefined) return [];

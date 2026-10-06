@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   answerNotes,
+  translationPrompt,
+  validateTranslation,
   clarifyPrompt,
   questionPrompt,
   baseDifficulty,
@@ -287,5 +289,32 @@ describe("language and name in prompts", () => {
   it("evaluations are always written in English", () => {
     const [system] = evaluationPrompt(job, history(["new_topic"]));
     expect(system.content).toContain("ALWAYS write the evaluation in English");
+  });
+});
+
+describe("evaluation translation (view only)", () => {
+  const original = { strengths: ["Clear examples", "Good tradeoffs"], concerns: ["Shallow on testing"], overall_score: 7, summary: "Solid candidate." };
+  const good = { strengths: ["Exemplos claros", "Bons tradeoffs"], concerns: ["Superficial em testes"], summary: "Candidato sólido." };
+
+  it("keeps the original score, whatever the model returns", () => {
+    expect(validateTranslation({ ...good, overall_score: 1 }, original).overall_score).toBe(7);
+  });
+  it("accepts a faithful translation", () => {
+    const t = validateTranslation(good, original);
+    expect(t.strengths).toEqual(good.strengths);
+    expect(t.summary).toBe("Candidato sólido.");
+  });
+  it("rejects a translation that adds or drops items", () => {
+    expect(() => validateTranslation({ ...good, strengths: ["Só um"] }, original)).toThrow(/strengths/);
+    expect(() => validateTranslation({ ...good, concerns: ["a", "b"] }, original)).toThrow(/concerns/);
+  });
+  it("rejects empty strings and a missing summary", () => {
+    expect(() => validateTranslation({ ...good, concerns: [" "] }, original)).toThrow();
+    expect(() => validateTranslation({ ...good, summary: "" }, original)).toThrow(/summary/);
+  });
+  it("asks for the target language and sends only the text values", () => {
+    const [system, user] = translationPrompt(original, "pt-BR");
+    expect(system.content).toContain("into Brazilian Portuguese");
+    expect(JSON.parse(user.content)).toEqual({ strengths: original.strengths, concerns: original.concerns, summary: original.summary });
   });
 });

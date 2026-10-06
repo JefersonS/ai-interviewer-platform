@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as next } from "@/app/api/interview/next/route";
+import { POST as translate } from "@/app/api/interview/translate/route";
 import { fakeModel } from "./fakeModel";
 import { assertInvariants, runConversation } from "./run";
 import { SCENARIOS } from "./scenarios";
@@ -86,5 +87,44 @@ describe("model failures keep the interview going", () => {
     delete process.env.OPENROUTER_API_KEY;
     const { status } = await post({ jobId: "backend-engineer", history: [] });
     expect(status).toBe(502);
+  });
+});
+
+describe("translate route (view-only evaluation)", () => {
+  const evaluation = { strengths: ["Clear examples"], concerns: ["Shallow on testing"], overall_score: 7, summary: "Solid candidate." };
+  const call = async (body: unknown) => {
+    const res = await translate(new Request("http://test.local/api", { method: "POST", body: JSON.stringify(body) }));
+    return { status: res.status, data: await res.json() };
+  };
+  const reply = (content: unknown) =>
+    new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { status: 200 });
+
+  it("returns the translation with the original score", async () => {
+    vi.stubGlobal("fetch", async () => reply({ strengths: ["Exemplos claros"], concerns: ["Superficial em testes"], summary: "Candidato sólido." }));
+    const { status, data } = await call({ language: "pt-BR", evaluation });
+    expect(status).toBe(200);
+    expect(data.evaluation.overall_score).toBe(7);
+    expect(data.evaluation.strengths).toEqual(["Exemplos claros"]);
+  });
+
+  it("rejects English and unknown languages without calling the model", async () => {
+    const spy = vi.fn();
+    vi.stubGlobal("fetch", spy);
+    expect((await call({ language: "en", evaluation })).status).toBe(400);
+    expect((await call({ language: "fr", evaluation })).status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed evaluation", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    expect((await call({ language: "pt-BR", evaluation: { strengths: [] } })).status).toBe(400);
+  });
+
+  it("retries a translation that changes the number of items, then fails cleanly", async () => {
+    const fetchSpy = vi.fn(async () => reply({ strengths: ["a", "b"], concerns: ["c"], summary: "s" }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const { status } = await call({ language: "pt-BR", evaluation });
+    expect(status).toBe(502);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 });
