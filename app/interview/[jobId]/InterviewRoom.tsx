@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Job } from "@/lib/jobs";
 import { MAX_CLARIFICATIONS, TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
-import { CLOSING_LINE, parseSaved, storageKey, type Saved } from "@/lib/session";
+import { cleanName, NO_CANDIDATE, type Candidate } from "@/lib/candidate";
+import { isLang, LANG_CODES, LANGUAGES } from "@/lib/languages";
+import { CLOSING_LINES, parseSaved, PROFILE_KEY, storageKey, type Saved } from "@/lib/session";
 import { fixTechTerms } from "@/lib/glossary";
 import { pickVoice } from "@/lib/voice";
 
@@ -105,6 +107,9 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const [closing, setClosing] = useState(false);
   const [clarifyMode, setClarifyMode] = useState(false);
   const [pendingAsk, setPendingAsk] = useState<string | null>(null);
+  const [candidate, setCandidateState] = useState<Candidate>(NO_CANDIDATE);
+  const [nameInput, setNameInput] = useState("");
+  const [nameError, setNameError] = useState("");
   const router = useRouter();
   const [hasSaved, setHasSaved] = useState(false);
   const canListen = useSyncExternalStore(
@@ -120,13 +125,14 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const closingSpoken = useRef(false);
   const closingDone = useRef<Promise<void>>(Promise.resolve());
   const stopSpeech = useRef<(() => void) | null>(null);
+  const candidateRef = useRef<Candidate>(NO_CANDIDATE); // callbacks read this; render reads the state copy
   const bottom = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
 
   const persist = useCallback(
     (nextTurns: Turn[], nextEval: Evaluation | null) => {
       if (!session.current) return;
-      session.current = { ...session.current, turns: nextTurns, evaluation: nextEval };
+      session.current = { ...session.current, turns: nextTurns, evaluation: nextEval, candidate: candidateRef.current };
       try {
         localStorage.setItem(storageKey(job.id), JSON.stringify(session.current));
       } catch {
@@ -148,8 +154,9 @@ export default function InterviewRoom({ job }: { job: Job }) {
     };
     stopSpeech.current = finish;
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US";
-    const voice = pickVoice(window.speechSynthesis.getVoices(), "en-US");
+    const speech = LANGUAGES[candidateRef.current.language].speech;
+    u.lang = speech;
+    const voice = pickVoice(window.speechSynthesis.getVoices(), speech);
     if (voice) u.voice = voice;
     u.onend = finish;
     u.onerror = finish;
@@ -167,6 +174,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
         const data = await post<{ done: boolean; question?: NextQuestion }>("/api/interview/next", {
           jobId: job.id,
           history,
+          candidate: candidateRef.current,
         });
         if (data.done || !data.question) return;
         const q = data.question;
@@ -210,7 +218,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
       const last = history[history.length - 1];
       if (history.length >= TOTAL_QUESTIONS * 2) {
         if (!closingSpoken.current) {
-          closingDone.current = new Promise<void>((resolve) => speak(CLOSING_LINE, resolve));
+          closingDone.current = new Promise<void>((resolve) => speak(CLOSING_LINES[candidateRef.current.language], resolve));
         }
         closingSpoken.current = true;
         setClosing(true);
@@ -230,12 +238,17 @@ export default function InterviewRoom({ job }: { job: Job }) {
       const saved = parseSaved(localStorage.getItem(storageKey(job.id)));
       if (saved?.turns.length) {
         session.current = saved;
+        applyCandidate(saved.candidate ?? NO_CANDIDATE);
+        if (saved.candidate?.name) setNameInput(saved.candidate.name);
         setTurns(saved.turns);
         setEvaluation(saved.evaluation);
         setHasSaved(true);
       }
+      const profile = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "null");
+      if (profile && typeof profile.name === "string") setNameInput(profile.name.slice(0, 40));
+      if (profile && isLang(profile.language)) setCandidateState((c) => ({ ...c, language: profile.language }));
     } catch {
-      // Storage unavailable: start fresh.
+      // Storage unavailable or unreadable: start fresh.
     }
     setStatus("ready");
   }, [job.id]);
@@ -261,9 +274,28 @@ export default function InterviewRoom({ job }: { job: Job }) {
     if (listening) el.scrollTop = el.scrollHeight;
   }, [draft, listening]);
 
+  function applyCandidate(c: Candidate) {
+    candidateRef.current = c;
+    setCandidateState(c);
+  }
+
   function start(resume: boolean) {
     if (!resume || !session.current) {
-      session.current = { id: crypto.randomUUID(), startedAt: Date.now(), turns: [], evaluation: null };
+      let name: string;
+      try {
+        name = cleanName(nameInput);
+      } catch (e) {
+        setNameError((e as Error).message);
+        return;
+      }
+      setNameError("");
+      applyCandidate({ name, language: candidate.language });
+      try {
+        localStorage.setItem(PROFILE_KEY, JSON.stringify({ name, language: candidate.language }));
+      } catch {
+        // Not remembering the profile is fine.
+      }
+      session.current = { id: crypto.randomUUID(), startedAt: Date.now(), turns: [], evaluation: null, candidate: candidateRef.current };
       setTurns([]);
       setEvaluation(null);
       persist([], null);
@@ -293,7 +325,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
     const r = new Ctor();
     r.continuous = true;
     r.interimResults = true;
-    r.lang = "en-US";
+    r.lang = LANGUAGES[candidateRef.current.language].speech;
     finalText.current = draft ? draft.trim() + " " : "";
     r.onresult = (e) => {
       let interim = "";
@@ -353,7 +385,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
     setPendingAsk(message);
     setStatus("thinking");
     try {
-      const data = await post<{ reply: string }>("/api/interview/clarify", { jobId: job.id, history: turns, message });
+      const data = await post<{ reply: string }>("/api/interview/clarify", { jobId: job.id, history: turns, message, candidate: candidateRef.current });
       const updated: Turn[] = turns.map((t, i) =>
         i === turns.length - 1 && t.role === "interviewer"
           ? { ...t, clarifications: [...(t.clarifications ?? []), { ask: message, reply: data.reply }] }
@@ -434,21 +466,59 @@ export default function InterviewRoom({ job }: { job: Job }) {
               {TOTAL_QUESTIONS} questions, about 10 minutes. The interviewer speaks each question. Answer with your
               microphone, check the text, then send.
             </p>
-            <div className="mt-5 flex flex-col gap-2">
-              {hasSaved && evaluation && (
-                <Link href={`/interview/${job.id}/summary`} className={`${primaryBtn} inline-block`}>
-                  View results
-                </Link>
-              )}
-              {hasSaved && !evaluation && (
-                <button onClick={() => start(true)} className={primaryBtn}>
-                  Resume interview
+            <form
+              className="mt-5 flex flex-col gap-3 text-left"
+              onSubmit={(e) => {
+                e.preventDefault();
+                start(false);
+              }}
+            >
+              <label className="text-sm font-medium" htmlFor="candidate-name">
+                Your name
+                <input
+                  id="candidate-name"
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  maxLength={40}
+                  autoComplete="name"
+                  placeholder="e.g. Ana Souza"
+                  aria-invalid={Boolean(nameError)}
+                  className="mt-1 w-full rounded-lg border border-zinc-300 bg-transparent px-3 py-2 font-normal outline-none transition focus:border-indigo-500 dark:border-zinc-700"
+                />
+              </label>
+              {nameError && <p className="-mt-1 text-xs text-red-600">{nameError}</p>}
+              <label className="text-sm font-medium" htmlFor="candidate-language">
+                Language
+                <select
+                  id="candidate-language"
+                  value={candidate.language}
+                  onChange={(e) => isLang(e.target.value) && setCandidateState({ ...candidate, language: e.target.value })}
+                  className="mt-1 w-full rounded-lg border border-zinc-300 bg-transparent px-3 py-2 font-normal outline-none transition focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-900"
+                >
+                  {LANG_CODES.map((code) => (
+                    <option key={code} value={code}>
+                      {LANGUAGES[code].label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="text-xs text-zinc-500">The interviewer speaks and listens in this language.</p>
+              <div className="mt-1 flex flex-col gap-2">
+                {hasSaved && evaluation && (
+                  <Link href={`/interview/${job.id}/summary`} className={`${primaryBtn} inline-block text-center`}>
+                    View results
+                  </Link>
+                )}
+                {hasSaved && !evaluation && (
+                  <button type="button" onClick={() => start(true)} className={primaryBtn}>
+                    Resume interview
+                  </button>
+                )}
+                <button type="submit" className={hasSaved ? ghostBtn : primaryBtn}>
+                  {hasSaved ? "Start over" : "Start interview"}
                 </button>
-              )}
-              <button onClick={() => start(false)} className={hasSaved ? ghostBtn : primaryBtn}>
-                {hasSaved ? "Start over" : "Start interview"}
-              </button>
-            </div>
+              </div>
+            </form>
           </div>
         )}
 
@@ -470,7 +540,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
               </Fragment>
             ))}
             {pendingAsk && <Bubble turn={{ role: "candidate", text: pendingAsk }} />}
-            {closing && <Bubble turn={{ role: "interviewer", text: CLOSING_LINE }} />}
+            {closing && <Bubble turn={{ role: "interviewer", text: CLOSING_LINES[candidate.language] }} />}
             {(status === "thinking" || status === "evaluating") && <Typing label={stateLabel[status] ?? ""} />}
             {status === "error" && (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
