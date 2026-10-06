@@ -60,7 +60,7 @@ Difficulty has four levels: 1 warm-up, 2 core, 3 advanced (tradeoffs, debugging)
 
 - The base difficulty ramps with the question number: **1, 1, 2, 2, 3, 3, 4**.
 - For each new question the model first **rates the candidate's last answer**: strong, adequate or weak.
-- Code then moves the difficulty one level: strong +1, weak -1, never below 1 or above 4. The model must return exactly that number. If it does not, the reply is rejected and retried.
+- Code then moves the difficulty one level: strong +1, weak -1, never below 1 or above 4. **The code sets the number**: the model is told which level matches each possible rating and writes the question at that level, but it does not report a difficulty, and any number it sends is ignored. (An earlier version rejected a reply whose number was wrong. That caused almost half of all retries, so the rule moved from "validate" to "derive".)
 - Follow-ups use the same rule: a strong answer gets a deeper probe, a weak one a simpler clarifying probe.
 
 The result is visible in the tests: a candidate rated strong every time sees difficulty `1, 2, 3, 3, 4, 4, 4`; a weak one sees `1, 1, 1, 1, 2, 2, 3`.
@@ -72,10 +72,10 @@ For each turn the model returns JSON, which the code validates before showing an
 | Field | Written by | Checked by code |
 |---|---|---|
 | `reaction` + `question` | model (spoken, in the candidate's language) | no placeholders such as `[Name]`; non-empty |
-| `kind` (`new_topic` or `follow_up`) | model | must be an allowed kind |
-| `area` | model for a new topic; inherited for a follow-up | must be exactly one of the areas still to cover |
+| `kind` (`new_topic` or `follow_up`) | model | must be an allowed kind. One exception: a "new topic" aimed at the area just discussed is a follow-up in all but name, so while follow-ups are still allowed it is treated as one (the model's quote is kept, or the opening of the answer is used) |
+| `area` | model for a new topic; inherited for a follow-up | must be an area still to cover: the exact name, or a unique partial one such as "databases" |
 | `assessment` of the previous answer | model | required after question 1 |
-| `difficulty` | model | must equal the pacing rule above |
+| `difficulty` | code | computed from the assessment by the pacing rule above; the model's value is ignored |
 | `references` | model | for a follow-up: must quote the candidate's answer, so a follow-up provably depends on the prior answer |
 | `topic`, `reasoning` | model (one sentence on why it chose this question) | non-empty |
 
@@ -84,7 +84,7 @@ Each question is saved with these fields (plus `source`, see below). They are th
 ### 4. When the model fails
 
 Model replies fail in ordinary ways: invalid JSON, wrong difficulty, an area outside the allowed set, a follow-up with no quote. The pipeline handles this in layers:
-1. **Retry with the reason.** The retry includes the rejected reply and the validation error ("difficulty must be 2 for this assessment"). Resending the identical prompt repeated the same mistake in testing, so this matters.
+1. **Retry with the reason.** The retry includes the rejected reply and the validation error ("area must be exactly one of: ..."). Resending the identical prompt repeated the same mistake in testing, so this matters.
 2. **Fallback question.** If retries run out on a transient failure (bad output, network, rate limit, provider outage), the next question comes from a fixed bank: four difficulty levels for every focus area, or a generic probe that quotes the candidate's last answer. It follows the same coverage, follow-up and pacing rules, so the interview never stalls and still satisfies the spec. In live runs about 5% of questions needed it. These questions are marked `source: "fallback"`.
 3. **Loud failure for real misconfiguration.** A missing or rejected API key is *not* hidden behind fallback questions, because that would make a broken deploy look healthy.
 
@@ -136,13 +136,15 @@ Every finished interview is saved to **Postgres** (Railway) when the evaluation 
 
 Every model call is treated as unreliable (`lib/llm.ts`):
 
-- 25 s timeout, 3 attempts, exponential backoff with jitter, honouring `Retry-After`; 429 and 5xx are retried, other 4xx fail fast
+- up to 3 attempts of 25 s each, with exponential backoff and jitter, honouring `Retry-After`; 429 and 5xx are retried, other 4xx fail fast
+- an **overall deadline** for the whole call (30 s for a question, 25 s for a clarification, 40 s for the evaluation and translation), counted from the start, so it includes waiting for a free model slot and the pauses between attempts. A retry is not started when under 3 s remain. Running out of time counts as a transient failure, so a question falls back to the bank instead of making the candidate wait. The browser also stops waiting shortly after the server's deadline and shows a Retry button
+- replies are capped with `max_tokens` (600 for a question, 300 for a clarification, 900 for the evaluation and translation); a reply cut off by the cap is treated as invalid output
 - JSON is extracted from fenced or chatty replies, then validated by a caller-supplied function
-- at most 4 model calls in flight per process
+- at most 4 model calls in flight per process; a call waits for a slot only as long as its deadline allows
 - the interview server is **stateless**: the browser sends the history each turn and the server re-validates it, so requests are idempotent; the browser saves progress after every turn, so a reload resumes the interview. Only finished interviews go to the database
 - structured JSON logs (one line per call with label, attempt and latency)
 - the candidate's speech is treated as data, never as instructions; the name is restricted to letters before it enters a prompt
-- public deploy protection (`lib/guard.ts`): 60 model calls per IP per 15 minutes, 600 per hour overall, 100 KB request cap (enforced in production only)
+- public deploy protection (`lib/guard.ts`): 60 model calls per IP per 15 minutes, 600 per hour overall, 100 KB request cap. The cap is applied while the body is read (a byte counter stops the upload), not from the `Content-Length` header, which a chunked upload does not send. The size cap applies everywhere; the rate limits only in production
 
 ## Voice
 
@@ -186,6 +188,20 @@ railway up --service ai-interviewer
 
 `OPENROUTER_API_KEY` is set as a Railway variable, and `DATABASE_URL` is a reference to the project's Postgres service (`${{Postgres.DATABASE_URL}}`), so the app reaches the database over Railway's private network. (Auto-deploy from GitHub needs admin access to the repository's organization, so the CLI upload is used instead.)
 
+## Performance
+
+What was measured (local runs against the real model through OpenRouter, and the hosted site), and what it means. Numbers come from small samples and are indicative, not benchmarks.
+
+**Where the time goes.** About 90% of the wait is the model call. After the candidate answers, a question takes about 2.6 to 3.6 s to arrive when the reply passes the checks first time; the evaluation takes about 4 s and a clarification about 1.4 s. The voice then needs 8 to 13 s to read the question aloud, so a question's elapsed time is mostly speech, not waiting. Page loads are about 0.23 s to the first byte from the test machine (mostly network distance) with 183 KB of JavaScript (gzip) on the interview page, and the history API answers in about 0.22 to 0.38 s.
+
+**The tail was retries, and it was fixed.** In the original design 22% of questions needed a retry, which made the p90 wait about 17 s and the worst case about 24 s. Rejected replies broke down as 46% wrong difficulty, 30% wrong area and 16% wrong follow-up or new-topic choice, nearly all rules the code can apply itself. Three changes followed: the code now derives the difficulty, a unique partial area name is accepted, and a "new topic" about the area just discussed is treated as the follow-up it is. In a check of 21 real questions across the three roles, retries fell to 4%, no question needed the fallback, the median wait fell to 2.6 s and the p90 to 5.4 s. Two more guards bound the worst case: the overall deadline and the token cap described above.
+
+**Cost and size.** Each model call resends the transcript, so input grows with every question (about 650 tokens at question 1, about 1,900 at question 7). A whole interview is roughly 11k input and 1.3k output tokens, plus the retries. Multiply by the model's current per-token price on OpenRouter (not looked up here). Resending the history makes total tokens grow quadratically, which is negligible at 7 questions and would matter at 30.
+
+**Capacity.** The rate limits are the ceiling, on purpose: 600 model calls per hour in total is roughly 50 interviews per hour for the whole site, and 60 per 15 minutes per IP is about 5 interviews, shared by everyone behind the same address. The 4 model slots are rarely contended at that rate. The limits live in one process and reset on deploy, so running several instances would need a shared store. The database pool is 5 connections; history reads are indexed by owner and time and capped at 100 rows, and the table is created on the first request after a boot.
+
+**Not measured.** Behaviour under real load (many simultaneous users), a cold start on Railway, performance on phones, and memory over a long uptime. There is no per-request latency metric or dashboard either: the figures above were computed from the structured logs with scripts, which is also the answer to "how would you monitor this" (add a total-time line per request, a request id, and percentiles).
+
 ## Decisions and tradeoffs
 
 | Decision | Why | Cost |
@@ -202,7 +218,7 @@ railway up --service ai-interviewer
 ## Known limitations
 
 - Speech-to-text mishears technical terms; the glossary only covers the ones it was taught.
-- Each question takes about 3 to 9 seconds (cheap model, plus retries when it breaks a rule).
+- Each question takes about 3 seconds when the model's reply passes the checks first time (see the Performance section for measured numbers).
 - The interviewer's rating of answers and the final score come from the same cheap model. They separate strong from weak candidates reliably in tests, but they are not calibrated against human judgement.
 - An unfinished interview lives only in one browser's storage; clearing it deletes it. Finished ones are in the database but can only be opened from the browser that owns them.
 - The UI text (buttons, hints) is English only, even when the interview is in Portuguese.
