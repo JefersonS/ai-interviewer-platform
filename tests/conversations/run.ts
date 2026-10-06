@@ -19,7 +19,7 @@ export async function runConversation(scn: Scenario): Promise<Result> {
   const history: Turn[] = [];
 
   for (let i = 0; i < TOTAL_QUESTIONS; i++) {
-    const n = await call(next, { jobId: scn.jobId, history });
+    const n = await call(next, { jobId: scn.jobId, history, candidate: scn.candidate });
     expect(n.status, `question ${i + 1}: ${JSON.stringify(n.data)}`).toBe(200);
     const q = n.data.question;
     const turn: Asked = {
@@ -38,14 +38,14 @@ export async function runConversation(scn: Scenario): Promise<Result> {
 
     if (scn.clarifyAfter === i) {
       const message = "Could you rephrase that?";
-      const c = await call(clarify, { jobId: scn.jobId, history, message });
+      const c = await call(clarify, { jobId: scn.jobId, history, message, candidate: scn.candidate });
       expect(c.status, JSON.stringify(c.data)).toBe(200);
       turn.clarifications = [{ ask: message, reply: c.data.reply }];
     }
     history.push({ role: "candidate", text: scn.answers[i] });
   }
 
-  const after = await call(next, { jobId: scn.jobId, history });
+  const after = await call(next, { jobId: scn.jobId, history, candidate: scn.candidate });
   const ev = await call(evaluate, { jobId: scn.jobId, history });
   expect(ev.status, JSON.stringify(ev.data)).toBe(200);
 

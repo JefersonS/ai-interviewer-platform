@@ -1,10 +1,11 @@
+import { parseCandidate } from "@/lib/candidate";
 import { getJob } from "@/lib/jobs";
 import { clarifyPrompt, MAX_CLARIFICATIONS, parseHistory, validateClarification } from "@/lib/interview";
 import { chatJson, LlmError } from "@/lib/llm";
 import { log } from "@/lib/logger";
 
 export async function POST(request: Request) {
-  let body: { jobId?: unknown; history?: unknown; message?: unknown };
+  let body: { jobId?: unknown; history?: unknown; message?: unknown; candidate?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -16,6 +17,13 @@ export async function POST(request: Request) {
 
   const message = typeof body.message === "string" ? body.message.trim().slice(0, 500) : "";
   if (!message) return Response.json({ error: "message is required" }, { status: 400 });
+
+  let candidate;
+  try {
+    candidate = parseCandidate(body.candidate);
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400 });
+  }
 
   let history;
   try {
@@ -35,7 +43,7 @@ export async function POST(request: Request) {
   try {
     const reply = await chatJson({
       label: `clarify:${job.id}:q${(history.length + 1) / 2}`,
-      messages: clarifyPrompt(job, history, message),
+      messages: clarifyPrompt(job, history, message, candidate),
       validate: validateClarification,
     });
     return Response.json({ reply });

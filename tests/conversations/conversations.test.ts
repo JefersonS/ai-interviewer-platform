@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { baseDifficulty, difficultyFor, TOTAL_QUESTIONS } from "@/lib/interview";
+import { LANGUAGES } from "@/lib/languages";
 import { fakeModel } from "./fakeModel";
 import { assertInvariants, runConversation } from "./run";
 import { SCENARIOS } from "./scenarios";
@@ -29,6 +30,16 @@ describe("full conversations (offline fake model)", () => {
 
       const r = await runConversation(scn);
       assertInvariants(scn, r);
+
+      // The chosen language and the candidate's name must reach every question prompt.
+      if (scn.candidate) {
+        const prompts = model.questionPrompts();
+        expect(prompts.length).toBeGreaterThan(0);
+        for (const p of prompts) {
+          expect(p).toContain(`run the whole interview in ${LANGUAGES[scn.candidate.language].promptName}`);
+          expect(p).toContain(`name is ${scn.candidate.name}`);
+        }
+      }
 
       expect(r.asked.map((t) => t.difficulty)).toEqual(trajectory(scn.persona));
 

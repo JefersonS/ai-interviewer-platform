@@ -25,6 +25,7 @@ describe.skipIf(!hasKey)("full conversations (live model)", () => {
       async () => {
         const result = await runConversation(scn);
         printConversation(scn, result);
+
         results.push({
           id: scn.id,
           persona: scn.persona,
@@ -41,6 +42,13 @@ describe.skipIf(!hasKey)("full conversations (live model)", () => {
             answer: scn.answers[i],
           })),
         });
+        if (scn.candidate?.language === "pt-BR") {
+          // Loose language check: most questions should read as Portuguese, the evaluation as English.
+          const portuguese = /\b(você|voce|como|qual|quais|que|para|uma|seu|sua|já|em)\b/i;
+          const inPortuguese = result.asked.filter((t) => portuguese.test(t.text)).length;
+          if (inPortuguese < 6) throw new Error(`only ${inPortuguese} of 7 questions look Portuguese`);
+          if (/[ãõç]/i.test(result.evaluation.summary)) throw new Error("evaluation summary is not in English");
+        }
         assertInvariants(scn, result);
       },
       240_000,

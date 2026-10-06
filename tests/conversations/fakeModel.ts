@@ -8,6 +8,7 @@ type Message = { role: string; content: string };
 // breaks these patterns, the conversation tests fail, which is the point.
 export function fakeModel(scn: Scenario) {
   let calls = 0;
+  const questionPrompts: string[] = [];
 
   const questionPayload = (system: string, messages: Message[]) => {
     const idx = Number(/question (\d+) of/.exec(system)?.[1]) - 1;
@@ -48,6 +49,7 @@ export function fakeModel(scn: Scenario) {
 
     let payload: unknown;
     if (system.startsWith("You are a friendly, professional interviewer")) {
+      questionPrompts.push(system);
       const idx = Number(/question (\d+) of/.exec(system)?.[1]) - 1;
       const fails = scn.failQuestions === "all" || (Array.isArray(scn.failQuestions) && scn.failQuestions.includes(idx));
       if (fails) return new Response(JSON.stringify({ choices: [{ message: { content: "Sorry, I cannot do that." } }] }), { status: 200 });
@@ -67,5 +69,5 @@ export function fakeModel(scn: Scenario) {
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) } }] }), { status: 200 });
   };
 
-  return { fetchImpl, calls: () => calls };
+  return { fetchImpl, calls: () => calls, questionPrompts: () => questionPrompts };
 }

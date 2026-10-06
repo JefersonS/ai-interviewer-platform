@@ -1,9 +1,13 @@
 import type { Difficulty } from "./interview";
+import type { Lang } from "./languages";
+import { QUESTION_BANK_PT } from "./questions.pt";
+
+export type Bank = Record<string, Record<string, [string, string, string, string]>>;
 
 // Fixed questions used only when the model fails. One per difficulty level (1 to 4)
 // for every focus area, so the interview can always continue at the right pace.
 // Keys must match each job's focusAreas exactly; a test checks this.
-export const QUESTION_BANK: Record<string, Record<string, [string, string, string, string]>> = {
+export const QUESTION_BANK: Bank = {
   "backend-engineer": {
     "API design": [
       "To start, how would you describe the kind of APIs you have built and who used them?",
@@ -84,9 +88,11 @@ export const QUESTION_BANK: Record<string, Record<string, [string, string, strin
   },
 };
 
-export function bankQuestion(jobId: string, area: string, difficulty: Difficulty): string[] {
-  // Returns all four variants ordered by closeness to the wanted difficulty.
-  const variants = QUESTION_BANK[jobId]?.[area] ?? [];
+export const QUESTION_BANKS: Record<Lang, Bank> = { en: QUESTION_BANK, "pt-BR": QUESTION_BANK_PT };
+
+// Returns all four variants for an area, ordered by closeness to the wanted difficulty.
+export function bankQuestion(jobId: string, area: string, difficulty: Difficulty, lang: Lang = "en"): string[] {
+  const variants = QUESTION_BANKS[lang][jobId]?.[area] ?? [];
   return variants
     .map((text, i) => ({ text, distance: Math.abs(i + 1 - difficulty), i }))
     .sort((a, b) => a.distance - b.distance || a.i - b.i)

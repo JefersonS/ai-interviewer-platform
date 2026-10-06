@@ -1,5 +1,8 @@
+import type { Candidate } from "@/lib/candidate";
+
 export type Scenario = {
   id: string;
+  candidate?: Candidate; // omitted = English, no name
   jobId: string;
   persona: "strong" | "weak";
   answers: string[]; // one per question, in order
@@ -105,6 +108,39 @@ export const SCENARIOS: Scenario[] = [
       "I send updates when I remember.",
       "Customers mostly email support, I have not spoken to them much.",
       "Nothing comes to mind.",
+    ],
+  },
+  {
+    id: "backend-pt-strong",
+    jobId: "backend-engineer",
+    candidate: { name: "Ana", language: "pt-BR" },
+    persona: "strong",
+    eager: true,
+    answers: [
+      "Construí uma API de pagamentos em Node com Postgres que atendia cerca de duas mil requisições por segundo, e adicionei chaves de idempotência depois de cobranças duplicadas.",
+      "Usei réplicas de leitura e cache com Redis, mas a invalidação do cache gerou alguns bugs de saldo desatualizado, que resolvemos com TTLs curtos e atualização write-through.",
+      "Tivemos uma queda quando uma migração travou uma tabela grande. Fiz rollback e depois passamos a usar migrações online, com preenchimento em lotes pequenos.",
+      "Eu monitoro com dashboards no Grafana e alertas de latência p99 e taxa de erro, e cada alerta aponta para um runbook.",
+      "Para escalar, primeiro eu faria profiling, depois adicionaria índices, e só consideraria sharding se um único primário não aguentasse.",
+      "Gosto de trabalhar junto com os engenheiros de frontend para combinar o contrato da API cedo, documentado em um arquivo OpenAPI.",
+      "Quero aprender mais sobre arquiteturas orientadas a eventos e como manter consumidores idempotentes.",
+    ],
+  },
+  {
+    id: "pm-pt-weak",
+    jobId: "product-manager",
+    candidate: { name: "Ana", language: "pt-BR" },
+    persona: "weak",
+    eager: false,
+    clarifyAfter: 1,
+    answers: [
+      "Eu gerenciei alguns projetos e conversei com a equipe.",
+      "Eu priorizava pelo que a pessoa que falava mais alto queria.",
+      "A gente olhava se as pessoas tinham gostado.",
+      "Eu dizia sim para quase todos os pedidos para deixar todo mundo feliz.",
+      "Eu mando atualizações quando lembro.",
+      "Os clientes quase sempre escrevem para o suporte, eu não falei muito com eles.",
+      "Nada me vem à cabeça.",
     ],
   },
 ];

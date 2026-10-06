@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   answerNotes,
+  clarifyPrompt,
+  questionPrompt,
   baseDifficulty,
   evaluationPrompt,
   decideNext,
@@ -256,5 +258,34 @@ describe("evaluation prompt", () => {
     expect(system.content).toContain("Score guide");
     expect(system.content).toContain("Mostly vague answers must score 4 or below");
     expect(user.content).toContain("answer 1 (question difficulty 1 of 4): weak");
+  });
+});
+
+describe("language and name in prompts", () => {
+  const open = decideNext([], job) as AskDecision;
+  const pt = { name: "Ana", language: "pt-BR" } as const;
+
+  it("asks for the interview in the chosen language, keeping code-checked fields in English", () => {
+    const [system] = questionPrompt(job, [], open, pt);
+    expect(system.content).toContain("run the whole interview in Brazilian Portuguese");
+    expect(system.content).toContain('"area" must be copied verbatim from the English list');
+    expect(system.content).toContain("quote the candidate's words exactly");
+  });
+  it("tells the model the candidate's name and how to use it", () => {
+    const [system] = questionPrompt(job, [], open, pt);
+    expect(system.content).toContain("The candidate's name is Ana");
+  });
+  it("omits the name rule when there is no name", () => {
+    const [system] = questionPrompt(job, [], open, { name: "", language: "en" });
+    expect(system.content).not.toContain("candidate's name is");
+    expect(system.content).toContain("run the whole interview in English");
+  });
+  it("clarifications are written in the interview language", () => {
+    const [system] = clarifyPrompt(job, history(["new_topic"]).slice(0, 1), "what?", pt);
+    expect(system.content).toContain("Write the reply in Brazilian Portuguese");
+  });
+  it("evaluations are always written in English", () => {
+    const [system] = evaluationPrompt(job, history(["new_topic"]));
+    expect(system.content).toContain("ALWAYS write the evaluation in English");
   });
 });

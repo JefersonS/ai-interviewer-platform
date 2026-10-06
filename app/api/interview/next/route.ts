@@ -1,3 +1,4 @@
+import { parseCandidate } from "@/lib/candidate";
 import { getJob } from "@/lib/jobs";
 import { decideNext, parseHistory, questionPrompt, requiredKind, validateQuestion } from "@/lib/interview";
 import { fallbackQuestion } from "@/lib/fallback";
@@ -5,7 +6,7 @@ import { chatJson, isTransient, LlmError } from "@/lib/llm";
 import { log } from "@/lib/logger";
 
 export async function POST(request: Request) {
-  let body: { jobId?: unknown; history?: unknown };
+  let body: { jobId?: unknown; history?: unknown; candidate?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -14,6 +15,13 @@ export async function POST(request: Request) {
 
   const job = typeof body.jobId === "string" ? getJob(body.jobId) : undefined;
   if (!job) return Response.json({ error: "unknown job" }, { status: 404 });
+
+  let candidate;
+  try {
+    candidate = parseCandidate(body.candidate);
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 400 });
+  }
 
   let history;
   try {
@@ -32,7 +40,7 @@ export async function POST(request: Request) {
   try {
     const question = await chatJson({
       label: `next_question:${job.id}:q${history.length / 2 + 1}`,
-      messages: questionPrompt(job, history, decision),
+      messages: questionPrompt(job, history, decision, candidate),
       validate: (raw) =>
         validateQuestion(raw, {
           required: requiredKind(decision),
@@ -48,7 +56,7 @@ export async function POST(request: Request) {
     // (missing or rejected API key): hiding that would make a broken deploy look healthy.
     if (isTransient(e)) {
       log("warn", "next_question.fallback", { jobId: job.id, index: history.length / 2, kind });
-      return Response.json({ done: false, question: fallbackQuestion(job, history, decision) });
+      return Response.json({ done: false, question: fallbackQuestion(job, history, decision, candidate) });
     }
     log("error", "next_question.failed", { jobId: job.id, kind });
     return Response.json({ error: "The interviewer is unavailable, please retry." }, { status: 502 });
