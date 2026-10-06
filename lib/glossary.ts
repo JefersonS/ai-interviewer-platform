@@ -4,12 +4,17 @@ const TERMS: Array<[string, string]> = [
   ["(?:no|node|know|note|nodes)[ .]?js", "Node.js"],
   ["next[ .]?js", "Next.js"],
   ["react[ .]?js", "React"],
-  ["vue[ .]?js", "Vue"],
+  ["(?:vue|view)[ .]?js", "Vue"],
   ["express[ .]?js", "Express"],
   ["type ?script", "TypeScript"],
   ["java ?script", "JavaScript"],
-  ["post ?gr(?:e|a)s(?:s|ql| q l)?|postgres q l|postgre ?sql", "PostgreSQL"],
-  ["my ?sequel|my s q l", "MySQL"],
+  // "postgre", "post gres", "post grass", "postgres sql", "postgres sequel", ...
+  ["post ?gr(?:e|a|ay|ey)(?:ss?)?(?: ?(?:sql|s ?q ?l|q ?l|sequel))?", "PostgreSQL"],
+  // "my sql" alone is ambiguous ("my SQL skills"), so it only counts before a database-ish word or a separator.
+  ["mysql|my ?sequel|my s q l|my sql(?= (?:database|db|server|cluster|instance|and|or|with|vs|versus)\\b|[,.;:!?]|$)", "MySQL"],
+  ["maria ?d b|maria ?db", "MariaDB"],
+  ["dynamo ?d b|dynamo ?db", "DynamoDB"],
+  ["elastic ?search", "Elasticsearch"],
   ["(?:sequel|sql) ?lite", "SQLite"],
   ["sequel|s q l", "SQL"],
   ["mongo ?d b|mongo ?db", "MongoDB"],
@@ -30,6 +35,11 @@ const TERMS: Array<[string, string]> = [
   ["rabbit ?m ?q", "RabbitMQ"],
   ["terra ?form", "Terraform"],
   ["docker", "Docker"],
+  ["engine ?x|n ?ginx", "nginx"],
+  ["y ?a ?m ?l|yamel", "YAML"],
+  ["j son|jay son", "JSON"],
+  ["git ?hub", "GitHub"],
+  ["git ?lab", "GitLab"],
 ];
 
 const COMPILED = TERMS.map(([src, out]) => [new RegExp(`\\b(?:${src})\\b`, "gi"), out] as const);
