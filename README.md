@@ -77,7 +77,7 @@ For each turn the model returns JSON, which the code validates before showing an
 | `references` | model | for a follow-up: must quote the candidate's answer, so a follow-up provably depends on the prior answer |
 | `topic`, `reasoning` | model (one sentence on why it chose this question) | non-empty |
 
-Each question is saved with these fields (plus `source`, see below). They are the explanation of *why this question was chosen*: what area it covers, how the last answer was rated, what difficulty and why, and which words it follows up on. They are stored with the session but not yet shown in the UI; surfacing them is the "decision panel" stretch goal (see below).
+Each question is saved with these fields (plus `source`, see below). They are the explanation of *why this question was chosen*: what area it covers, how the last answer was rated, what difficulty and why, and which words it follows up on. They are stored with the session and are what the decision panel (next section) shows.
 
 ### 4. When the model fails
 
@@ -93,6 +93,21 @@ After the 7th answer one more call produces `{strengths, concerns, overall_score
 ### 6. Clarifying a question
 
 While a question is open the candidate can ask for a rephrase, an example, or something else (up to 2 per question, enforced server-side). Clarifications do not count as questions and do not change the rules above. They are stored with the question and shown to the evaluator, so asking is not held against the candidate.
+
+## The decision panel
+
+The **Decision panel** button in the interview header opens a panel that shows what the interviewer is tracking and why it asked what it asked. On wide screens it sits beside the chat; on a phone it opens full screen. It updates after every question.
+
+| Section | What it shows |
+|---|---|
+| Why this question | Follow-up or new topic, the focus area, the difficulty level, how the previous answer was rated (which set the difficulty), the words a follow-up builds on, and the model's one-line reasoning. A note appears when the question came from the fallback bank |
+| Topics | Each focus area as covered, current, or still a gap, with how many questions it has had |
+| Follow-ups | How many of the 3 follow-up slots are used, and the required minimum |
+| Difficulty and ratings | One bar per question: height is the difficulty, colour is how the answer to it was rated |
+| Skills detected | Skills and technologies the candidate showed, collected across answers |
+| Rule for the next question | What the code will allow next and why, for example "No follow-up slots left. The next question must open an uncovered area: ..." |
+
+Everything except "skills" and the one-line reasoning is computed by code from the saved questions (`lib/panel.ts`, unit-tested). Skills come from the model, which reports them while writing the next question; code keeps only skills that actually appear in the candidate's previous answer, so the panel cannot show invented ones.
 
 ## Reliability of the model calls
 
@@ -117,13 +132,14 @@ Every model call is treated as unreliable (`lib/llm.ts`):
 ```
 app/
   page.tsx                         job list
-  interview/[jobId]/               interview room (chat UI) and summary page
+  interview/[jobId]/               interview room (chat UI), decision panel, and summary page
   api/interview/{next,clarify,evaluate,translate}/route.ts
 lib/
   interview.ts   rules: policy, pacing, prompts, validators   (the core)
   llm.ts         OpenRouter client: retries, repair, concurrency
   fallback.ts, questions.ts, questions.pt.ts   fallback question bank
   guard.ts       rate limits and size cap
+  panel.ts       what the decision panel shows (pure, unit-tested)
   glossary.ts, voice.ts, languages.ts, candidate.ts, session.ts, jobs.ts, logger.ts
 tests/conversations/   full-conversation tests (offline and live)
 ```
@@ -159,6 +175,7 @@ railway up --service ai-interviewer
 
 - Speech-to-text mishears technical terms; the glossary only covers the ones it was taught.
 - Each question takes about 3 to 9 seconds (cheap model, plus retries when it breaks a rule).
+- Skills are detected while the next question is written, so skills in the very last answer are not captured (no question follows it).
 - The interviewer's rating of answers and the final score come from the same cheap model. They separate strong from weak candidates reliably in tests, but they are not calibrated against human judgement.
 - Sessions live in one browser's storage. Clearing it deletes the interview.
 - The UI text (buttons, hints) is English only, even when the interview is in Portuguese.
@@ -173,10 +190,9 @@ railway up --service ai-interviewer
 
 **Better transcription.** The real fix for the points above is a speech service that accepts a vocabulary hint (Whisper-class, Deepgram, AssemblyAI) fed with the role's terms. It costs a few cents per interview and a second API key, and the text would appear after each answer instead of live.
 
-**Server-side storage and the stretch goals.** Not done, in this order of planned effort:
-1. **Decision panel:** most of the data already exists per question (area, rating, difficulty, the model's one-line reasoning, the quote it follows, areas still uncovered, follow-ups left); it only needs a UI. "Skills detected" would be one extra model field.
-2. **Job-specific question packs:** the fallback bank is a first version (four levels per area). Behavioural versus technical categories and model selection from the pack are not built.
-3. **Video mode:** camera preview and a call-style layout; voice stays the input.
-4. **Replay and analytics:** needs a database (Postgres on Railway) and timestamps per turn for duration and talk ratio.
+**Server-side storage and the remaining stretch goals.** The decision panel is built (see above). Not done, in order of planned effort:
+1. **Job-specific question packs:** the fallback bank is a first version (four levels per area). Behavioural versus technical categories and model selection from the pack are not built.
+2. **Video mode:** camera preview and a call-style layout; voice stays the input.
+3. **Replay and analytics:** needs a database (Postgres on Railway) and timestamps per turn for duration and talk ratio.
 
 Also: shared rate limiting (Redis), authentication, a monitored spending cap on the key, and calibrating the scoring against human-labelled interviews.
