@@ -7,7 +7,7 @@ import type { Job } from "@/lib/jobs";
 import { MAX_CLARIFICATIONS, TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
 import { CLOSING_LINE, parseSaved, storageKey, type Saved } from "@/lib/session";
 import { fixTechTerms } from "@/lib/glossary";
-import { pickEnglishVoice } from "@/lib/voice";
+import { pickVoice } from "@/lib/voice";
 
 type Status = "loading" | "ready" | "thinking" | "speaking" | "answering" | "evaluating" | "error";
 
@@ -149,7 +149,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
     stopSpeech.current = finish;
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "en-US";
-    const voice = pickEnglishVoice(window.speechSynthesis.getVoices());
+    const voice = pickVoice(window.speechSynthesis.getVoices(), "en-US");
     if (voice) u.voice = voice;
     u.onend = finish;
     u.onerror = finish;
