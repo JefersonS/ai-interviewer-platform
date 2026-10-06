@@ -59,7 +59,61 @@ const ICONS = {
   mute: "M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6",
 };
 
-function Bubble({ turn, onReplay }: { turn: { role: Turn["role"]; text: string }; onReplay?: () => void }) {
+const REVEAL_CHARS_PER_SECOND = 50;
+
+// Shows `text` progressively while `animate` is true; shows it all as soon as it is false.
+// Callbacks live in a ref so a parent re-render cannot restart the animation.
+function Reveal({ text, animate, onTick, onDone }: { text: string; animate: boolean; onTick?: () => void; onDone?: () => void }) {
+  const [count, setCount] = useState(0);
+  const callbacks = useRef({ onTick, onDone });
+  useEffect(() => {
+    callbacks.current = { onTick, onDone };
+  });
+
+  const reduceMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const active = animate && !reduceMotion;
+
+  useEffect(() => {
+    if (!animate) return;
+    if (reduceMotion) {
+      callbacks.current.onDone?.();
+      return;
+    }
+    const startedAt = performance.now();
+    const id = setInterval(() => {
+      const n = Math.min(text.length, Math.floor(((performance.now() - startedAt) / 1000) * REVEAL_CHARS_PER_SECOND));
+      setCount((c) => Math.max(c, n));
+      callbacks.current.onTick?.();
+      if (n >= text.length) {
+        clearInterval(id);
+        callbacks.current.onDone?.();
+      }
+    }, 30);
+    return () => clearInterval(id);
+  }, [animate, reduceMotion, text]);
+
+  if (!active) return <>{text}</>;
+  return (
+    <>
+      <span className="sr-only">{text}</span>
+      <span aria-hidden>{text.slice(0, count)}</span>
+    </>
+  );
+}
+
+function Bubble({
+  turn,
+  onReplay,
+  animate = false,
+  onTick,
+  onDone,
+}: {
+  turn: { role: Turn["role"]; text: string };
+  onReplay?: () => void;
+  animate?: boolean;
+  onTick?: () => void;
+  onDone?: () => void;
+}) {
   if (turn.role === "candidate") {
     return (
       <div className="flex justify-end">
@@ -71,7 +125,9 @@ function Bubble({ turn, onReplay }: { turn: { role: Turn["role"]; text: string }
     <div className="group flex items-start gap-3">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-xs font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900">AI</div>
       <div className="flex max-w-[80%] items-center gap-2">
-        <p className="rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-2.5 dark:bg-zinc-800">{turn.text}</p>
+        <p className="rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-2.5 dark:bg-zinc-800">
+          <Reveal text={turn.text} animate={animate} onTick={onTick} onDone={onDone} />
+        </p>
         {onReplay && (
           <button onClick={onReplay} title="Replay question" aria-label="Replay question" className={`${btn} rounded-full p-1.5 text-zinc-400 opacity-0 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200`}>
             <Icon d={ICONS.volume} className="h-4 w-4" />
@@ -107,6 +163,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const [closing, setClosing] = useState(false);
   const [clarifyMode, setClarifyMode] = useState(false);
   const [pendingAsk, setPendingAsk] = useState<string | null>(null);
+  const [animateKey, setAnimateKey] = useState<string | null>(null); // which bubble is being revealed
   const [candidate, setCandidateState] = useState<Candidate>(NO_CANDIDATE);
   const [nameInput, setNameInput] = useState("");
   const [nameError, setNameError] = useState("");
@@ -128,6 +185,8 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const candidateRef = useRef<Candidate>(NO_CANDIDATE); // callbacks read this; render reads the state copy
   const bottom = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const finishReveal = useCallback(() => setAnimateKey(null), []);
+  const keepBottomInView = useCallback(() => bottom.current?.scrollIntoView({ block: "end" }), []);
 
   const persist = useCallback(
     (nextTurns: Turn[], nextEval: Evaluation | null) => {
@@ -184,6 +243,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
         ];
         setTurns(withQ);
         persist(withQ, null);
+        setAnimateKey(`q:${withQ.length - 1}`);
         speak(q.question, () => setStatus("answering"));
       } catch (e) {
         setError((e as Error).message);
@@ -222,6 +282,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
         }
         closingSpoken.current = true;
         setClosing(true);
+        setAnimateKey("closing");
         return void evaluate(history);
       }
       if (last?.role === "interviewer") return speak(last.text, () => setStatus("answering"));
@@ -301,6 +362,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
       persist([], null);
     }
     setClosing(false);
+    setAnimateKey(null);
     closingSpoken.current = false;
     advance(session.current.turns);
   }
@@ -309,6 +371,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   function stopSpeaking() {
     window.speechSynthesis?.cancel();
     stopSpeech.current?.();
+    setAnimateKey(null);
   }
 
   function toggleMute() {
@@ -367,6 +430,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
     if (!text || status !== "answering") return;
     discardRecognition();
     window.speechSynthesis?.cancel();
+    setAnimateKey(null);
     const next: Turn[] = [...turns, { role: "candidate", text }];
     setTurns(next);
     setDraft("");
@@ -394,6 +458,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
       setTurns(updated);
       persist(updated, null);
       setPendingAsk(null);
+      setAnimateKey(`c:${turns.length - 1}:${(last.clarifications ?? []).length}`);
       speak(data.reply, () => setStatus("answering"));
     } catch (e) {
       setPendingAsk(null);
@@ -528,19 +593,22 @@ export default function InterviewRoom({ job }: { job: Job }) {
               <Fragment key={i}>
                 <Bubble
                   turn={t}
+                  animate={animateKey === `q:${i}`}
+                  onTick={keepBottomInView}
+                  onDone={finishReveal}
                   onReplay={t.role === "interviewer" && i === lastIdx && status === "answering" ? () => speak(t.text, () => setStatus("answering")) : undefined}
                 />
                 {t.role === "interviewer" &&
                   (t.clarifications ?? []).map((c, j) => (
                     <Fragment key={j}>
                       <Bubble turn={{ role: "candidate", text: c.ask }} />
-                      <Bubble turn={{ role: "interviewer", text: c.reply }} />
+                      <Bubble turn={{ role: "interviewer", text: c.reply }} animate={animateKey === `c:${i}:${j}`} onTick={keepBottomInView} onDone={finishReveal} />
                     </Fragment>
                   ))}
               </Fragment>
             ))}
             {pendingAsk && <Bubble turn={{ role: "candidate", text: pendingAsk }} />}
-            {closing && <Bubble turn={{ role: "interviewer", text: CLOSING_LINES[candidate.language] }} />}
+            {closing && <Bubble turn={{ role: "interviewer", text: CLOSING_LINES[candidate.language] }} animate={animateKey === "closing"} onTick={keepBottomInView} onDone={finishReveal} />}
             {(status === "thinking" || status === "evaluating") && <Typing label={stateLabel[status] ?? ""} />}
             {status === "error" && (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
