@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Job } from "@/lib/jobs";
 import { MAX_CLARIFICATIONS, TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
 import { cleanName, NO_CANDIDATE, type Candidate } from "@/lib/candidate";
 import { isLang, LANG_CODES, LANGUAGES } from "@/lib/languages";
 import { CLOSING_LINES, parseSaved, PROFILE_KEY, storageKey, type Saved } from "@/lib/session";
 import { fixTechTerms } from "@/lib/glossary";
+import { panelState } from "@/lib/panel";
+import DecisionPanel from "./DecisionPanel";
 import { pickVoice } from "@/lib/voice";
 
 type Status = "loading" | "ready" | "thinking" | "speaking" | "answering" | "evaluating" | "error";
@@ -55,6 +57,7 @@ const ICONS = {
   mic: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3",
   stop: "M6 6h12v12H6z",
   play: "M8 5v14l11-7z",
+  panel: "M4 4h16v16H4zM14 4v16",
   send: "M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z",
   volume: "M11 5L6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14",
   mute: "M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6",
@@ -180,6 +183,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const [muted, setMuted] = useState(false);
   const [closing, setClosing] = useState(false);
   const [clarifyMode, setClarifyMode] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [pendingAsk, setPendingAsk] = useState<string | null>(null);
   const [animateKey, setAnimateKey] = useState<string | null>(null); // which bubble is being revealed
   const [candidate, setCandidateState] = useState<Candidate>(NO_CANDIDATE);
@@ -515,6 +519,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
     return {};
   };
 
+  const panel = useMemo(() => panelState(job, turns), [job, turns]);
   const answered = turns.filter((t) => t.role === "candidate").length;
   const inProgress = status !== "ready" && status !== "loading";
   const stateLabel: Partial<Record<Status, string>> = {
@@ -534,6 +539,17 @@ export default function InterviewRoom({ job }: { job: Job }) {
           <h1 className="truncate font-semibold">{job.title} interview</h1>
           {inProgress && <p className="text-xs text-zinc-500">{stateLabel[status] ?? ""}</p>}
         </div>
+        {inProgress && (
+          <button
+            onClick={() => setPanelOpen((open) => !open)}
+            aria-pressed={panelOpen}
+            title="Decision panel"
+            className={`${btn} flex items-center gap-1.5 rounded-full px-2.5 py-2 text-sm ${panelOpen ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-200" : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"}`}
+          >
+            <Icon d={ICONS.panel} className="h-4 w-4" />
+            <span className="hidden sm:inline">Decision panel</span>
+          </button>
+        )}
         <button onClick={toggleMute} title={muted ? "Unmute interviewer" : "Mute interviewer"} aria-label={muted ? "Unmute interviewer" : "Mute interviewer"} className={`${btn} rounded-full p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100`}>
           <Icon d={muted ? ICONS.mute : ICONS.volume} />
         </button>
@@ -552,7 +568,8 @@ export default function InterviewRoom({ job }: { job: Job }) {
   );
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-3xl flex-col">
+    <div className="mx-auto flex h-dvh w-full max-w-6xl justify-center">
+      <div className="flex h-dvh w-full min-w-0 max-w-3xl flex-col">
       {header}
 
       <div className="flex-1 overflow-y-auto px-4 py-6">
@@ -726,6 +743,12 @@ export default function InterviewRoom({ job }: { job: Job }) {
           </div>
           <p className="mt-2 text-center text-xs text-zinc-400">Enter to send, Shift+Enter for a new line. You can edit the transcribed text first.</p>
         </div>
+      )}
+      </div>
+      {panelOpen && inProgress && (
+        <aside className="fixed inset-0 z-30 overflow-y-auto bg-background p-4 lg:static lg:z-auto lg:h-dvh lg:w-80 lg:shrink-0 lg:border-l lg:border-zinc-200 lg:bg-transparent dark:lg:border-zinc-800">
+          <DecisionPanel state={panel} onClose={() => setPanelOpen(false)} />
+        </aside>
       )}
     </div>
   );
