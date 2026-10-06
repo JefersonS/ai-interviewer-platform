@@ -32,6 +32,7 @@ export type Turn =
       assessment: Assessment | null; // model's rating of the previous answer
       clarifications?: Clarification[]; // side exchanges about this question
       source?: "fallback"; // set when the model failed and a bank question was used
+      skills?: string[]; // skills the candidate showed in the previous answer
     }
   | { role: "candidate"; text: string };
 
@@ -44,6 +45,7 @@ export type NextQuestion = {
   references: string;
   difficulty: Difficulty;
   assessment: Assessment | null;
+  skills: string[];
   source?: "fallback";
 };
 
@@ -119,9 +121,36 @@ export function difficultyFor(index: number, assessment: Assessment | null): Dif
 
 const ASSESSMENTS = ["strong", "adequate", "weak"];
 
+const squash = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+// Skills the model says the candidate showed. When the answer is known, a skill is kept only
+// if it actually appears in it, so the panel cannot show invented skills.
+export function cleanSkills(raw: unknown, answer?: string): string[] {
+  if (!Array.isArray(raw)) return [];
+  const haystack = answer === undefined ? null : squash(answer);
+  const kept: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const skill = item.trim().slice(0, 40);
+    const key = squash(skill);
+    if (key.length < 2) continue;
+    if (haystack !== null && !haystack.includes(key)) continue;
+    if (kept.some((k) => squash(k) === key)) continue;
+    kept.push(skill);
+    if (kept.length === 5) break;
+  }
+  return kept;
+}
+
 // gen is given when validating a freshly generated question (strict: the model must
 // follow the pacing and coverage rules). It is omitted when re-reading stored history.
-export type Gen = { required: QuestionKind | null; index: number; areas: string[]; parentArea: string | null };
+export type Gen = {
+  required: QuestionKind | null;
+  index: number;
+  areas: string[];
+  parentArea: string | null;
+  lastAnswer?: string; // the candidate's previous answer, used to check reported skills
+};
 
 export function validateQuestion(raw: unknown, gen?: Gen): NextQuestion {
   const r = raw as Record<string, unknown>;
@@ -164,6 +193,7 @@ export function validateQuestion(raw: unknown, gen?: Gen): NextQuestion {
     references: typeof r.references === "string" ? r.references.trim().slice(0, 300) : "",
     difficulty: difficulty as Difficulty,
     assessment: gen?.index === 0 ? null : (assessment as Assessment | null),
+    skills: gen?.index === 0 ? [] : cleanSkills(r.skills, gen?.lastAnswer),
   };
   if (kind === "follow_up" && out.references === "") {
     throw new Error("follow_up must quote what the candidate said in references");
@@ -249,7 +279,7 @@ ${pacing}
 Difficulty scale: ${(Object.entries(DIFFICULTY_LABELS) as [string, string][]).map(([k, v]) => `${k} = ${v}`).join("; ")}.
 For a follow_up, a strong answer deserves a deeper probe and a weak one a simpler clarifying probe.
 ${SAFETY}
-Reply with only JSON: {"assessment": "strong" | "adequate" | "weak" | null, "reaction": string, "question": string, "kind": "new_topic" | "follow_up", "area": a focus area exactly as listed, "difficulty": 1-4, "topic": short label, "reasoning": one sentence on why this question, "references": exact words from the candidate's last answer you are following up on, or ""}`;
+Reply with only JSON: {"assessment": "strong" | "adequate" | "weak" | null, "reaction": string, "question": string, "kind": "new_topic" | "follow_up", "area": a focus area exactly as listed, "difficulty": 1-4, "topic": short label, "reasoning": one sentence on why this question, "references": exact words from the candidate's last answer you are following up on, or "", "skills": up to 5 short skills, technologies or concepts the candidate actually showed in their last answer, worded as they said them ([] for the opening)}`;
 
   const user = history.length
     ? `Transcript so far:
@@ -365,6 +395,6 @@ export function parseHistory(raw: unknown): Turn[] {
     const text = str(t.text, "text", 2000);
     if (expected === "candidate") return { role: "candidate", text };
     const q = validateQuestion({ ...t, question: text });
-    return { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, clarifications: parseClarifications(t.clarifications), ...(t.source === "fallback" ? { source: "fallback" as const } : {}) };
+    return { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, skills: q.skills, clarifications: parseClarifications(t.clarifications), ...(t.source === "fallback" ? { source: "fallback" as const } : {}) };
   });
 }

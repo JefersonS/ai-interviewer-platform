@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   answerNotes,
+  cleanSkills,
   translationPrompt,
   validateTranslation,
   clarifyPrompt,
@@ -316,5 +317,42 @@ describe("evaluation translation (view only)", () => {
     const [system, user] = translationPrompt(original, "pt-BR");
     expect(system.content).toContain("into Brazilian Portuguese");
     expect(JSON.parse(user.content)).toEqual({ strengths: original.strengths, concerns: original.concerns, summary: original.summary });
+  });
+});
+
+describe("skills detected", () => {
+  const answer = "I built it in Node.js with Postgres and added idempotency keys.";
+
+  it("keeps skills that appear in the answer, ignoring case, spacing and punctuation", () => {
+    expect(cleanSkills(["node js", "POSTGRES", "idempotency keys"], answer)).toEqual(["node js", "POSTGRES", "idempotency keys"]);
+  });
+  it("drops skills the candidate never said", () => {
+    expect(cleanSkills(["Postgres", "Kubernetes", "GraphQL"], answer)).toEqual(["Postgres"]);
+  });
+  it("removes duplicates, junk, and anything past 5", () => {
+    const many = ["a1", "b2", "c3", "d4", "e5", "f6", "g7"];
+    expect(cleanSkills(many)).toHaveLength(5);
+    expect(cleanSkills(["Postgres", "postgres", " POSTGRES "], answer)).toEqual(["Postgres"]);
+    expect(cleanSkills([42, null, "", "x", "C"], "x c 42")).toEqual([]); // too short to be meaningful
+  });
+  it("returns an empty list for anything that is not a list", () => {
+    expect(cleanSkills(undefined, answer)).toEqual([]);
+    expect(cleanSkills("Postgres", answer)).toEqual([]);
+  });
+  it("is applied when validating a generated question, and never on the opening", () => {
+    const raw = { question: "Why?", reaction: "Thanks.", kind: "new_topic", topic: "x", area: A1, reasoning: "y", references: "", difficulty: 2, assessment: "adequate", skills: ["Postgres", "Rust"] };
+    const gen = { required: null, index: 2, areas: job.focusAreas, parentArea: null, lastAnswer: answer };
+    expect(validateQuestion(raw, gen).skills).toEqual(["Postgres"]);
+    expect(validateQuestion({ ...raw, difficulty: 1, assessment: null }, { ...gen, index: 0 }).skills).toEqual([]);
+  });
+  it("a missing skills field never fails a question", () => {
+    const raw = { question: "Why?", reaction: "Thanks.", kind: "new_topic", topic: "x", area: A1, reasoning: "y", references: "", difficulty: 2, assessment: "adequate" };
+    const gen = { required: null, index: 2, areas: job.focusAreas, parentArea: null, lastAnswer: answer };
+    expect(validateQuestion(raw, gen).skills).toEqual([]);
+  });
+  it("survives the round trip through saved history", () => {
+    const turn = { ...(q("new_topic") as Extract<Turn, { role: "interviewer" }>), skills: ["Postgres"] };
+    const parsed = parseHistory([turn]);
+    expect(parsed[0].role === "interviewer" && parsed[0].skills).toEqual(["Postgres"]);
   });
 });

@@ -51,6 +51,7 @@ export async function POST(request: Request) {
           index: history.length / 2,
           areas: decision.newTopicAreas,
           parentArea: decision.parentArea,
+          lastAnswer: history.length ? history[history.length - 1].text : undefined,
         }),
     });
     return Response.json({ done: false, question });

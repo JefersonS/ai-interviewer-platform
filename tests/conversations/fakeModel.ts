@@ -29,7 +29,10 @@ export function fakeModel(scn: Scenario) {
     const kind = mustFollowUp ? "follow_up" : mustMoveOn ? "new_topic" : scn.eager ? "follow_up" : "new_topic";
 
     const lastAnswer = [...(messages.find((m) => m.role === "user")?.content ?? "").matchAll(/^Candidate: (.+)$/gm)].pop()?.[1] ?? "";
+    // One real word from the last answer plus an invented skill, so the filter is exercised end to end.
+    const realWord = lastAnswer.split(/\W+/).find((w) => w.length > 4);
     return {
+      skills: idx === 0 || !realWord ? [] : [realWord, "Invented Skill 123"],
       assessment: idx === 0 ? null : scn.persona,
       reaction: idx === 0 ? "Hi, I'm your AI interviewer." : "Thanks for sharing that.",
       question: `Question ${idx + 1}: tell me more about this?`,

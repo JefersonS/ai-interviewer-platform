@@ -41,6 +41,11 @@ describe("full conversations (offline fake model)", () => {
         }
       }
 
+      // The fake model reports one real word and one invented skill: only the real one may survive.
+      const detected = r.asked.flatMap((t) => t.skills ?? []);
+      expect(detected.length).toBeGreaterThan(0);
+      expect(detected.some((k) => k.includes("Invented"))).toBe(false);
+
       expect(r.asked.map((t) => t.difficulty)).toEqual(trajectory(scn.persona));
 
       // A follow-up must quote the answer it follows.

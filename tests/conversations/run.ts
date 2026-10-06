@@ -32,6 +32,7 @@ export async function runConversation(scn: Scenario): Promise<Result> {
       references: q.references,
       difficulty: q.difficulty,
       assessment: q.assessment,
+      skills: q.skills,
       ...(q.source ? { source: q.source } : {}),
     };
     history.push(turn);
@@ -77,6 +78,12 @@ export function assertInvariants(scn: Scenario, r: Result) {
       expect(t.area).toBe(r.asked[i - 1].area); // a follow-up stays on its parent's area
     }
     expect(t.text).not.toMatch(/\[[^\]]*\]/);
+
+    // Reported skills must come from the answer they were detected in, never from thin air.
+    const squash = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    const skills = t.skills ?? [];
+    if (i === 0) expect(skills).toEqual([]);
+    else skills.forEach((k) => expect(squash(scn.answers[i - 1])).toContain(squash(k)));
   });
   expect(new Set(r.asked.map((t) => t.text)).size).toBe(TOTAL_QUESTIONS); // no repeated question
 

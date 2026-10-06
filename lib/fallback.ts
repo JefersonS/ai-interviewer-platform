@@ -35,7 +35,13 @@ export function fallbackQuestion(job: Job, history: Turn[], decision: AskDecisio
   const index = asked.length;
   const difficulty = difficultyFor(index, null);
   const reaction = index === 0 ? phrases.greeting(candidate.name) : phrases.reactions[index % phrases.reactions.length];
-  const common = { difficulty, assessment: null, source: "fallback" } as const;
+  // A fixed question cannot rate the last answer or detect skills.
+  const common: Pick<NextQuestion, "difficulty" | "assessment" | "skills" | "source"> = {
+    difficulty,
+    assessment: null,
+    skills: [],
+    source: "fallback",
+  };
 
   if (index > 0 && decision.allowed.length === 1 && decision.allowed[0] === "follow_up") {
     const lastAnswer = history[history.length - 1].text;
