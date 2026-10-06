@@ -1,9 +1,13 @@
+import { guard } from "@/lib/guard";
 import { getJob } from "@/lib/jobs";
 import { evaluationPrompt, parseHistory, TOTAL_QUESTIONS, validateEvaluation } from "@/lib/interview";
 import { chatJson, LlmError } from "@/lib/llm";
 import { log } from "@/lib/logger";
 
 export async function POST(request: Request) {
+  const blocked = guard(request);
+  if (blocked) return blocked;
+
   let body: { jobId?: unknown; history?: unknown };
   try {
     body = await request.json();

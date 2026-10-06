@@ -1,3 +1,4 @@
+import { guard } from "@/lib/guard";
 import { parseCandidate } from "@/lib/candidate";
 import { getJob } from "@/lib/jobs";
 import { decideNext, parseHistory, questionPrompt, requiredKind, validateQuestion } from "@/lib/interview";
@@ -6,6 +7,9 @@ import { chatJson, isTransient, LlmError } from "@/lib/llm";
 import { log } from "@/lib/logger";
 
 export async function POST(request: Request) {
+  const blocked = guard(request);
+  if (blocked) return blocked;
+
   let body: { jobId?: unknown; history?: unknown; candidate?: unknown };
   try {
     body = await request.json();

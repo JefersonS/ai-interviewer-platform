@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as next } from "@/app/api/interview/next/route";
 import { POST as translate } from "@/app/api/interview/translate/route";
+import { resetRateLimits } from "@/lib/guard";
 import { fakeModel } from "./fakeModel";
 import { assertInvariants, runConversation } from "./run";
 import { SCENARIOS } from "./scenarios";
@@ -126,5 +127,38 @@ describe("translate route (view-only evaluation)", () => {
     const { status } = await call({ language: "pt-BR", evaluation });
     expect(status).toBe(502);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("public-deploy protection on the routes", () => {
+  beforeEach(() => {
+    resetRateLimits();
+    process.env.RATE_LIMIT_ENABLED = "1";
+    process.env.RATE_LIMIT_PER_IP = "2";
+  });
+  afterEach(() => {
+    delete process.env.RATE_LIMIT_ENABLED;
+    delete process.env.RATE_LIMIT_PER_IP;
+    resetRateLimits();
+  });
+
+  it("refuses with 429 before any model call once an address is over its limit", async () => {
+    const fetchSpy = vi.fn(async () => new Response("", { status: 503 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const send = () =>
+      next(new Request("http://test.local/api", { method: "POST", headers: { "x-real-ip": "7.7.7.7" }, body: JSON.stringify({ jobId: "backend-engineer", history: [] }) }));
+
+    expect((await send()).status).toBe(200); // served from the fallback bank
+    expect((await send()).status).toBe(200);
+    const callsBefore = fetchSpy.mock.calls.length;
+    const blocked = await send();
+    expect(blocked.status).toBe(429);
+    expect((await blocked.json()).error).toMatch(/Too many requests/);
+    expect(fetchSpy.mock.calls.length).toBe(callsBefore); // no model call for a blocked request
+  });
+
+  it("refuses oversized bodies with 413", async () => {
+    const res = await next(new Request("http://test.local/api", { method: "POST", headers: { "content-length": "500000" }, body: "{}" }));
+    expect(res.status).toBe(413);
   });
 });

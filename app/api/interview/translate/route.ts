@@ -1,3 +1,4 @@
+import { guard } from "@/lib/guard";
 import { translationPrompt, validateEvaluation, validateTranslation } from "@/lib/interview";
 import { isLang } from "@/lib/languages";
 import { chatJson, LlmError } from "@/lib/llm";
@@ -6,6 +7,9 @@ import { log } from "@/lib/logger";
 // View-only: the client keeps the English evaluation as the record and asks for a
 // translation to show. Nothing is stored here.
 export async function POST(request: Request) {
+  const blocked = guard(request);
+  if (blocked) return blocked;
+
   let body: { language?: unknown; evaluation?: unknown };
   try {
     body = await request.json();
