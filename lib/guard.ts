@@ -10,6 +10,7 @@ const GLOBAL_WINDOW_MS = 60 * 60 * 1000;
 type Bucket = { count: number; resetAt: number };
 const perIp = new Map<string, Bucket>();
 const everyone: Bucket = { count: 0, resetAt: 0 };
+const historyIp = new Map<string, Bucket>(); // separate budget: browsing history costs no model calls
 
 const limits = () => ({
   perIp: Number(process.env.RATE_LIMIT_PER_IP) || 60,
@@ -66,7 +67,29 @@ export function guard(request: Request, now = Date.now()): Response | null {
   return null;
 }
 
+// For the history routes: size cap and a per-IP limit of their own, with no global model cap.
+export function guardHistory(request: Request, now = Date.now()): Response | null {
+  const size = Number(request.headers.get("content-length") ?? 0);
+  if (size > MAX_BODY_BYTES) return Response.json({ error: "request too large" }, { status: 413 });
+  if (!enforced()) return null;
+
+  const limit = Number(process.env.RATE_LIMIT_HISTORY_PER_IP) || 120;
+  if (historyIp.size > 5000) {
+    for (const [key, b] of historyIp) if (now >= b.resetAt) historyIp.delete(key);
+  }
+  const ip = clientIp(request);
+  const bucket = historyIp.get(ip) ?? { count: 0, resetAt: 0 };
+  historyIp.set(ip, bucket);
+  const wait = consume(bucket, limit, IP_WINDOW_MS, now);
+  if (wait) {
+    log("warn", "rate_limited", { scope: "history" });
+    return tooMany(wait, `Too many requests. Please wait ${Math.ceil(wait / 60)} minute(s) and try again.`);
+  }
+  return null;
+}
+
 export function resetRateLimits() {
+  historyIp.clear();
   perIp.clear();
   everyone.count = 0;
   everyone.resetAt = 0;

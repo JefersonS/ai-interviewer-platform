@@ -33,8 +33,9 @@ export type Turn =
       clarifications?: Clarification[]; // side exchanges about this question
       source?: "fallback"; // set when the model failed and a bank question was used
       skills?: string[]; // skills the candidate showed in the previous answer
+      at?: number; // when this message appeared (epoch ms), used for answer-time analytics
     }
-  | { role: "candidate"; text: string };
+  | { role: "candidate"; text: string; at?: number };
 
 export type NextQuestion = {
   question: string;
@@ -404,8 +405,9 @@ export function parseHistory(raw: unknown): Turn[] {
     const expected = i % 2 === 0 ? "interviewer" : "candidate";
     if (t?.role !== expected) throw new Error("turns must alternate, starting with the interviewer");
     const text = str(t.text, "text", 2000);
-    if (expected === "candidate") return { role: "candidate", text };
+    const at = Number.isFinite(t.at) && t.at > 0 ? { at: Number(t.at) } : {};
+    if (expected === "candidate") return { role: "candidate", text, ...at };
     const q = validateQuestion({ ...t, question: text });
-    return { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, skills: q.skills, clarifications: parseClarifications(t.clarifications), ...(t.source === "fallback" ? { source: "fallback" as const } : {}) };
+    return { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, skills: q.skills, clarifications: parseClarifications(t.clarifications), ...at, ...(t.source === "fallback" ? { source: "fallback" as const } : {}) };
   });
 }
