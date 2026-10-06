@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useMemo, useState, useSyncExternalStore } from "react";
+import { NO_CANDIDATE } from "@/lib/candidate";
+import { saveToHistory } from "@/lib/historyClient";
 import { LANGUAGES } from "@/lib/languages";
 import type { Job } from "@/lib/jobs";
 import { panelState } from "@/lib/panel";
@@ -43,12 +45,42 @@ export default function Summary({ job }: { job: Job }) {
   const [showTranslated, setShowTranslated] = useState(false);
   const [translating, setTranslating] = useState(false);
   const [translateError, setTranslateError] = useState("");
+  const [savingHistory, setSavingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
 
   // The English evaluation is the saved record. A translation is only another way to view it.
   const lang = saved?.candidate?.language;
   const canTranslate = Boolean(lang && lang !== "en");
   const translation = lang ? saved?.translations?.[lang] : undefined;
   const shown = showTranslated && translation ? translation : evaluation;
+
+  // The room saves to the history in the background; this is the retry if that did not work.
+  async function retrySave() {
+    if (!saved || !evaluation || !saved.finishedAt) return;
+    setSavingHistory(true);
+    setHistoryError(false);
+    const ok = await saveToHistory({
+      id: saved.id,
+      jobId: job.id,
+      candidate: saved.candidate ?? NO_CANDIDATE,
+      startedAt: saved.startedAt,
+      finishedAt: saved.finishedAt,
+      turns: saved.turns,
+      evaluation,
+      lastAnswer: saved.lastAnswer,
+    });
+    if (ok) {
+      try {
+        localStorage.setItem(storageKey(job.id), JSON.stringify({ ...saved, savedToHistory: true }));
+        listeners.forEach((l) => l());
+      } catch {
+        // Could not remember it locally; the server has it either way.
+      }
+    } else {
+      setHistoryError(true);
+    }
+    setSavingHistory(false);
+  }
 
   async function toggleTranslation() {
     if (!saved || !evaluation || !lang) return;
@@ -105,6 +137,22 @@ export default function Summary({ job }: { job: Job }) {
           {saved.candidate.name} · {LANGUAGES[saved.candidate.language].label}
         </p>
       )}
+      {saved.savedToHistory ? (
+        <p className="mt-3 text-sm text-zinc-500">
+          Saved to your history. <Link href="/history" className="font-medium text-indigo-600 hover:underline dark:text-indigo-400">View history</Link>
+        </p>
+      ) : saved.finishedAt ? (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            onClick={retrySave}
+            disabled={savingHistory}
+            className="rounded-full border border-zinc-300 px-4 py-1.5 text-sm transition hover:border-indigo-500 hover:bg-indigo-50 hover:text-indigo-700 active:scale-95 disabled:cursor-wait disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-indigo-950 dark:hover:text-indigo-200"
+          >
+            {savingHistory ? "Saving..." : "Save to history"}
+          </button>
+          {historyError && <span className="text-xs text-red-600">Could not save right now. Try again in a moment.</span>}
+        </div>
+      ) : null}
       {canTranslate && lang && (
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <button

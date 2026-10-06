@@ -8,6 +8,8 @@ export type Saved = {
   turns: Turn[];
   evaluation: Evaluation | null;
   lastAnswer?: LastAnswer; // the evaluation's rating and skills for the final answer
+  finishedAt?: number; // when the evaluation arrived (epoch ms); absent in older sessions
+  savedToHistory?: boolean; // true once the server has stored this interview in the history
   candidate?: Candidate; // absent in sessions saved before names and languages existed
   translations?: Partial<Record<Lang, Evaluation>>; // view-only copies; the English evaluation stays the source
 };

@@ -9,6 +9,7 @@ import { cleanName, NO_CANDIDATE, type Candidate } from "@/lib/candidate";
 import { isLang, LANG_CODES, LANGUAGES } from "@/lib/languages";
 import { CLOSING_LINES, parseSaved, PROFILE_KEY, storageKey, type Saved } from "@/lib/session";
 import { fixTechTerms } from "@/lib/glossary";
+import { saveToHistory } from "@/lib/historyClient";
 import { panelState } from "@/lib/panel";
 import DecisionPanel from "./DecisionPanel";
 import { pickVoice } from "@/lib/voice";
@@ -224,6 +225,20 @@ export default function InterviewRoom({ job }: { job: Job }) {
     [job.id],
   );
 
+  // Adds fields to the saved session (finish time, history flag) without touching the turns.
+  const patchSession = useCallback(
+    (patch: Partial<Saved>) => {
+      if (!session.current) return;
+      session.current = { ...session.current, ...patch };
+      try {
+        localStorage.setItem(storageKey(job.id), JSON.stringify(session.current));
+      } catch {
+        // Storage unavailable: the interview still works.
+      }
+    },
+    [job.id],
+  );
+
   const speak = useCallback((text: string, then: () => void) => {
     if (mutedRef.current || !("speechSynthesis" in window)) return then();
     setStatus("speaking");
@@ -262,7 +277,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
         const q = data.question;
         const withQ: Turn[] = [
           ...history,
-          { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, skills: q.skills, ...(q.source ? { source: q.source } : {}) },
+          { role: "interviewer", text: q.question, kind: q.kind, topic: q.topic, area: q.area, reasoning: q.reasoning, references: q.references, difficulty: q.difficulty, assessment: q.assessment, skills: q.skills, at: Date.now(), ...(q.source ? { source: q.source } : {}) },
         ];
         setTurns(withQ);
         persist(withQ, null);
@@ -285,6 +300,22 @@ export default function InterviewRoom({ job }: { job: Job }) {
         setEvaluation(data.evaluation);
         setLastAnswer(data.lastAnswer);
         persist(history, data.evaluation, data.lastAnswer);
+        const finishedAt = Date.now();
+        patchSession({ finishedAt });
+        const current = session.current;
+        if (current) {
+          // Background and best effort: a failed save can be retried from the summary page.
+          void saveToHistory({
+            id: current.id,
+            jobId: job.id,
+            candidate: candidateRef.current,
+            startedAt: current.startedAt,
+            finishedAt,
+            turns: history,
+            evaluation: data.evaluation,
+            lastAnswer: data.lastAnswer,
+          }).then((saved) => saved && patchSession({ savedToHistory: true }));
+        }
         // Leaving the page cancels speech, so let the closing line finish first.
         await closingDone.current;
         router.push(`/interview/${job.id}/summary`);
@@ -293,7 +324,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
         setStatus("error");
       }
     },
-    [job.id, persist, router],
+    [job.id, patchSession, persist, router],
   );
 
   // Decide what to do next from whatever history we have (fresh or resumed).
@@ -462,7 +493,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
     discardRecognition();
     window.speechSynthesis?.cancel();
     setAnimateKey(null);
-    const next: Turn[] = [...turns, { role: "candidate", text }];
+    const next: Turn[] = [...turns, { role: "candidate", text, at: Date.now() }];
     setTurns(next);
     setDraft("");
     persist(next, null);
