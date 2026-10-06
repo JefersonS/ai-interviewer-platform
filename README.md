@@ -88,7 +88,7 @@ Model replies fail in ordinary ways: invalid JSON, wrong difficulty, an area out
 
 ### 5. The evaluation
 
-After the 7th answer one more call produces `{strengths, concerns, overall_score (1 to 10), summary}`. Scores used to cluster around 6 because the prompt had no anchors, so it now has a **score guide** (for example "mostly vague answers must score 4 or below") and receives the interviewer's per-answer ratings and each question's difficulty. In live runs strong scripted candidates score 7 or 8 and weak ones 2. The evaluation is always written in English and saved that way.
+After the 7th answer one more call produces `{strengths, concerns, overall_score (1 to 10), summary}`. It also rates the final answer and lists its skills (`last_answer`), because there is no next question left to carry that rating. Scores used to cluster around 6 because the prompt had no anchors, so it now has a **score guide** (for example "mostly vague answers must score 4 or below") and receives the interviewer's per-answer ratings and each question's difficulty. In live runs strong scripted candidates score 7 or 8 and weak ones 2. The evaluation is always written in English and saved that way.
 
 ### 6. Clarifying a question
 
@@ -108,6 +108,8 @@ The **Decision panel** button in the interview header opens a panel that shows w
 | Rule for the next question | What the code will allow next and why, for example "No follow-up slots left. The next question must open an uncovered area: ..." |
 
 Everything except "skills" and the one-line reasoning is computed by code from the saved questions (`lib/panel.ts`, unit-tested). Skills come from the model, which reports them while writing the next question; code keeps only skills that actually appear in the candidate's previous answer, so the panel cannot show invented ones.
+
+The final answer has no next question to carry its rating or skills, so the evaluation call provides them; the panel fills in the last bar and the skills when the evaluation arrives and shows "Interview complete". The summary page shows the same information as a read-only **How the interviewer decided** section, with every question's reasoning, so the whole trail stays visible after the interview ends.
 
 ## Reliability of the model calls
 
@@ -175,7 +177,6 @@ railway up --service ai-interviewer
 
 - Speech-to-text mishears technical terms; the glossary only covers the ones it was taught.
 - Each question takes about 3 to 9 seconds (cheap model, plus retries when it breaks a rule).
-- Skills are detected while the next question is written, so skills in the very last answer are not captured (no question follows it).
 - The interviewer's rating of answers and the final score come from the same cheap model. They separate strong from weak candidates reliably in tests, but they are not calibrated against human judgement.
 - Sessions live in one browser's storage. Clearing it deletes the interview.
 - The UI text (buttons, hints) is English only, even when the interview is in Portuguese.
