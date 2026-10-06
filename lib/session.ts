@@ -1,5 +1,5 @@
 import type { Candidate } from "./candidate";
-import type { Evaluation, Turn } from "./interview";
+import type { Evaluation, LastAnswer, Turn } from "./interview";
 import type { Lang } from "./languages";
 
 export type Saved = {
@@ -7,6 +7,7 @@ export type Saved = {
   startedAt: number;
   turns: Turn[];
   evaluation: Evaluation | null;
+  lastAnswer?: LastAnswer; // the evaluation's rating and skills for the final answer
   candidate?: Candidate; // absent in sessions saved before names and languages existed
   translations?: Partial<Record<Lang, Evaluation>>; // view-only copies; the English evaluation stays the source
 };

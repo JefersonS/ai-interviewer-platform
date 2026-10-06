@@ -1,5 +1,5 @@
-import type { Assessment } from "@/lib/interview";
-import type { PanelState } from "@/lib/panel";
+import type { Assessment, QuestionKind } from "@/lib/interview";
+import type { PanelState, Step } from "@/lib/panel";
 
 const RATING_BAR: Record<Assessment, string> = { strong: "bg-emerald-500", adequate: "bg-amber-400", weak: "bg-rose-500" };
 const RATING_PILL: Record<Assessment, string> = {
@@ -17,52 +17,90 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-// Shows what the interviewer is tracking and why it asked what it asked.
-export default function DecisionPanel({ state, onClose }: { state: PanelState; onClose: () => void }) {
+function KindBadge({ kind }: { kind: QuestionKind }) {
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${kind === "follow_up" ? "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"}`}>
+      {kind === "follow_up" ? "Follow-up" : "New topic"}
+    </span>
+  );
+}
+
+const Chip = ({ children }: { children: React.ReactNode }) => <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs dark:bg-zinc-800">{children}</span>;
+
+function RatingPill({ rating }: { rating: Assessment }) {
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${RATING_PILL[rating]}`}>{rating}</span>;
+}
+
+function StepCard({ step }: { step: Step }) {
+  return (
+    <li className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs font-semibold text-zinc-500">Q{step.n}</span>
+        <KindBadge kind={step.kind} />
+        <Chip>{step.area}</Chip>
+        <Chip>
+          {step.levelName} · {step.difficulty}/4
+        </Chip>
+        {step.rating && (
+          <span className="ml-auto flex items-center gap-1 text-xs text-zinc-500">
+            answer <RatingPill rating={step.rating} />
+          </span>
+        )}
+      </div>
+      {step.quote && <p className="mt-2 text-xs text-zinc-500">Builds on: &ldquo;{step.quote}&rdquo;</p>}
+      {step.reasoning && <p className="mt-1.5 text-zinc-700 dark:text-zinc-300">{step.reasoning}</p>}
+      {step.fromBank && <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-300">Fixed question from the bank: the model was unavailable.</p>}
+    </li>
+  );
+}
+
+// "live" sits beside the chat during the interview. "final" is the read-only view on the summary page.
+export default function DecisionPanel({ state, onClose, mode = "live" }: { state: PanelState; onClose?: () => void; mode?: "live" | "final" }) {
   const { current } = state;
+  const live = mode === "live";
   return (
     <div className="space-y-6 text-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold">Decision panel</h2>
-          <p className="mt-0.5 text-xs text-zinc-500">What the interviewer is tracking, and why it asked this.</p>
+          <h2 className="text-base font-semibold">{live ? "Decision panel" : "How the interviewer decided"}</h2>
+          <p className="mt-0.5 text-xs text-zinc-500">{live ? "What the interviewer is tracking, and why it asked this." : "Topic coverage, pacing, and the reasoning behind each question."}</p>
         </div>
-        <button onClick={onClose} className="rounded-full border border-zinc-300 px-3 py-1 text-xs transition hover:bg-zinc-100 active:scale-95 dark:border-zinc-700 dark:hover:bg-zinc-800 lg:hidden">
-          Close
-        </button>
+        {live && (
+          <button onClick={onClose} className="rounded-full border border-zinc-300 px-3 py-1 text-xs transition hover:bg-zinc-100 active:scale-95 dark:border-zinc-700 dark:hover:bg-zinc-800 lg:hidden">
+            Close
+          </button>
+        )}
       </div>
 
-      <Section title="Why this question">
-        {current ? (
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${current.kind === "follow_up" ? "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"}`}>
-                {current.kind === "follow_up" ? "Follow-up" : "New topic"}
-              </span>
-              <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs dark:bg-zinc-800">{current.area}</span>
-              <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs dark:bg-zinc-800">
-                {current.levelName} · {current.difficulty}/4
-              </span>
+      {live && (
+        <Section title="Why this question">
+          {current ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <KindBadge kind={current.kind} />
+                <Chip>{current.area}</Chip>
+                <Chip>
+                  {current.levelName} · {current.difficulty}/4
+                </Chip>
+              </div>
+              {current.assessment && (
+                <p className="text-xs text-zinc-500">
+                  Previous answer rated <RatingPill rating={current.assessment} />, which set this difficulty.
+                </p>
+              )}
+              {current.quote && <p className="text-xs text-zinc-500">Builds on: &ldquo;{current.quote}&rdquo;</p>}
+              {current.reasoning && <blockquote className="border-l-2 border-indigo-400 pl-3 text-zinc-700 dark:text-zinc-300">{current.reasoning}</blockquote>}
+              {current.fromBank && (
+                <p className="rounded-lg bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                  The model was unavailable, so a fixed question from the role&apos;s question bank was used.
+                </p>
+              )}
             </div>
-            {current.assessment && (
-              <p className="text-xs text-zinc-500">
-                Previous answer rated <span className={`rounded-full px-2 py-0.5 font-medium ${RATING_PILL[current.assessment]}`}>{current.assessment}</span>, which set this difficulty.
-              </p>
-            )}
-            {current.quote && <p className="text-xs text-zinc-500">Builds on: &ldquo;{current.quote}&rdquo;</p>}
-            {current.reasoning && (
-              <blockquote className="border-l-2 border-indigo-400 pl-3 text-zinc-700 dark:text-zinc-300">{current.reasoning}</blockquote>
-            )}
-            {current.fromBank && (
-              <p className="rounded-lg bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                The model was unavailable, so a fixed question from the role&apos;s question bank was used.
-              </p>
-            )}
-          </div>
-        ) : (
-          <p className="text-zinc-500">Waiting for the first question.</p>
-        )}
-      </Section>
+          ) : (
+            <p className="text-zinc-500">Waiting for the first question.</p>
+          )}
+        </Section>
+      )}
 
       <Section title="Topics">
         <ul className="space-y-1.5">
@@ -127,9 +165,19 @@ export default function DecisionPanel({ state, onClose }: { state: PanelState; o
         )}
       </Section>
 
-      <Section title="Rule for the next question">
-        <p className="text-zinc-700 dark:text-zinc-300">{state.nextRule}</p>
-      </Section>
+      {live ? (
+        <Section title={state.complete ? "Status" : "Rule for the next question"}>
+          <p className="text-zinc-700 dark:text-zinc-300">{state.nextRule}</p>
+        </Section>
+      ) : (
+        <Section title="Question by question">
+          <ol className="space-y-2">
+            {state.steps.map((step) => (
+              <StepCard key={step.n} step={step} />
+            ))}
+          </ol>
+        </Section>
+      )}
     </div>
   );
 }

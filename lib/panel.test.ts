@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Assessment, Difficulty, QuestionKind, Turn } from "./interview";
+import type { Assessment, Difficulty, LastAnswer, QuestionKind, Turn } from "./interview";
 import { JOBS } from "./jobs";
 import { panelState } from "./panel";
 
@@ -100,8 +100,51 @@ describe("panelState: rule for the next question", () => {
     expect(panelState(job, turns).nextRule).toMatch(/must be a follow-up/);
   });
 
-  it("says so when the last question has been asked", () => {
-    const seven = run(...Array.from({ length: 7 }, (_, i) => q("new_topic", { area: job.focusAreas[i % 4] })));
-    expect(panelState(job, seven).nextRule).toBe("That was the last question.");
+  it("says it is the last question while question 7 is open", () => {
+    const six = run(...Array.from({ length: 6 }, (_, i) => q("new_topic", { area: job.focusAreas[i % 4] })));
+    const p = panelState(job, [...six, q("new_topic", { area: A4 })]);
+    expect(p.nextRule).toMatch(/^This is the last question/);
+    expect(p.complete).toBe(false);
+  });
+});
+
+describe("panelState: the final answer", () => {
+  const seven = run(...Array.from({ length: 7 }, (_, i) => q("new_topic", { area: job.focusAreas[i % 4], skills: i === 6 ? ["from the next question"] : [] })));
+  const final: LastAnswer = { rating: "strong", skills: ["Postgres", "Node.js"] };
+
+  it("is complete once question 7 is answered, and says the final answer is still being rated", () => {
+    const p = panelState(job, seven);
+    expect(p.complete).toBe(true);
+    expect(p.nextRule).toContain("Rating the final answer");
+    expect(p.trail[6].rating).toBeUndefined(); // no rating yet, so the last bar stays grey
+  });
+
+  it("fills in the last bar and the skills once the evaluation has rated the final answer", () => {
+    const p = panelState(job, seven, final);
+    expect(p.trail[6].rating).toBe("strong");
+    expect(p.steps[6].rating).toBe("strong");
+    expect(p.skills).toEqual(expect.arrayContaining(["Postgres", "Node.js"]));
+    expect(p.nextRule).toContain("evaluation is ready");
+  });
+
+  it("shows every asked area as covered, with none current, once the interview is complete", () => {
+    const p = panelState(job, seven, final);
+    expect(p.areas.every((a) => a.status === "covered")).toBe(true);
+  });
+
+  it("ignores a final-answer rating while question 7 is still open", () => {
+    const six = run(...Array.from({ length: 6 }, (_, i) => q("new_topic", { area: job.focusAreas[i % 4] })));
+    const p = panelState(job, [...six, q("new_topic", { area: A4 })], final);
+    expect(p.complete).toBe(false);
+    expect(p.trail[6].rating).toBeUndefined();
+    expect(p.skills).not.toContain("Postgres");
+  });
+
+  it("lists every question with the rating of its answer and the model's reasoning", () => {
+    const p = panelState(job, run(q("new_topic", { reasoning: "opening" }), q("follow_up", { assessment: "weak", reasoning: "probe" })), undefined);
+    expect(p.steps.map((s) => [s.n, s.kind, s.rating, s.reasoning])).toEqual([
+      [1, "new_topic", "weak", "opening"],
+      [2, "follow_up", undefined, "probe"],
+    ]);
   });
 });

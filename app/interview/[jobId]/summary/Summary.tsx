@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { LANGUAGES } from "@/lib/languages";
 import type { Job } from "@/lib/jobs";
+import { panelState } from "@/lib/panel";
 import { parseSaved, storageKey } from "@/lib/session";
+import DecisionPanel from "../DecisionPanel";
 
 const linkBtn =
   "inline-block rounded-full px-5 py-2.5 font-medium transition active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500";
@@ -137,6 +139,10 @@ export default function Summary({ job }: { job: Job }) {
           <summary className="cursor-pointer text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">Raw JSON (English, as saved)</summary>
           <pre className="mt-2 overflow-x-auto rounded-lg bg-zinc-100 p-4 dark:bg-zinc-900">{JSON.stringify(evaluation, null, 2)}</pre>
         </details>
+      </section>
+
+      <section className="mt-10 rounded-2xl border border-zinc-200 p-6 dark:border-zinc-800">
+        <DecisionPanel state={panelState(job, saved.turns, saved.lastAnswer)} mode="final" />
       </section>
 
       <section className="mt-10">

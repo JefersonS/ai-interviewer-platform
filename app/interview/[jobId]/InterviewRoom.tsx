@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Job } from "@/lib/jobs";
-import { MAX_CLARIFICATIONS, TOTAL_QUESTIONS, type Evaluation, type NextQuestion, type Turn } from "@/lib/interview";
+import { MAX_CLARIFICATIONS, TOTAL_QUESTIONS, type Evaluation, type LastAnswer, type NextQuestion, type Turn } from "@/lib/interview";
 import { cleanName, NO_CANDIDATE, type Candidate } from "@/lib/candidate";
 import { isLang, LANG_CODES, LANGUAGES } from "@/lib/languages";
 import { CLOSING_LINES, parseSaved, PROFILE_KEY, storageKey, type Saved } from "@/lib/session";
@@ -177,6 +177,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const [status, setStatus] = useState<Status>("loading");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
+  const [lastAnswer, setLastAnswer] = useState<LastAnswer | undefined>(undefined);
   const [draft, setDraft] = useState("");
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
@@ -211,9 +212,9 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const keepBottomInView = useCallback(() => bottom.current?.scrollIntoView({ block: "end" }), []);
 
   const persist = useCallback(
-    (nextTurns: Turn[], nextEval: Evaluation | null) => {
+    (nextTurns: Turn[], nextEval: Evaluation | null, nextLast?: LastAnswer) => {
       if (!session.current) return;
-      session.current = { ...session.current, turns: nextTurns, evaluation: nextEval, candidate: candidateRef.current };
+      session.current = { ...session.current, turns: nextTurns, evaluation: nextEval, lastAnswer: nextLast, candidate: candidateRef.current };
       try {
         localStorage.setItem(storageKey(job.id), JSON.stringify(session.current));
       } catch {
@@ -280,9 +281,10 @@ export default function InterviewRoom({ job }: { job: Job }) {
       setStatus("evaluating");
       setError("");
       try {
-        const data = await post<{ evaluation: Evaluation }>("/api/interview/evaluate", { jobId: job.id, history });
+        const data = await post<{ evaluation: Evaluation; lastAnswer?: LastAnswer }>("/api/interview/evaluate", { jobId: job.id, history });
         setEvaluation(data.evaluation);
-        persist(history, data.evaluation);
+        setLastAnswer(data.lastAnswer);
+        persist(history, data.evaluation, data.lastAnswer);
         // Leaving the page cancels speech, so let the closing line finish first.
         await closingDone.current;
         router.push(`/interview/${job.id}/summary`);
@@ -325,6 +327,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
         if (saved.candidate?.name) setNameInput(saved.candidate.name);
         setTurns(saved.turns);
         setEvaluation(saved.evaluation);
+        setLastAnswer(saved.lastAnswer);
         setHasSaved(true);
       }
       const profile = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "null");
@@ -386,6 +389,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
       session.current = { id: crypto.randomUUID(), startedAt: Date.now(), turns: [], evaluation: null, candidate: candidateRef.current };
       setTurns([]);
       setEvaluation(null);
+      setLastAnswer(undefined);
       persist([], null);
     }
     setClosing(false);
@@ -519,7 +523,7 @@ export default function InterviewRoom({ job }: { job: Job }) {
     return {};
   };
 
-  const panel = useMemo(() => panelState(job, turns), [job, turns]);
+  const panel = useMemo(() => panelState(job, turns, lastAnswer), [job, turns, lastAnswer]);
   const answered = turns.filter((t) => t.role === "candidate").length;
   const inProgress = status !== "ready" && status !== "loading";
   const stateLabel: Partial<Record<Status, string>> = {
