@@ -44,9 +44,9 @@ const chip =
   "rounded-full border border-zinc-300 px-3 py-1 text-xs transition hover:border-indigo-500 hover:bg-indigo-50 hover:text-indigo-700 active:scale-95 focus-visible:outline-2 focus-visible:outline-indigo-500 dark:border-zinc-700 dark:hover:bg-indigo-950 dark:hover:text-indigo-200";
 const ghostBtn = `${btn} rounded-full border border-zinc-300 px-5 py-2.5 font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800`;
 
-function Icon({ d, className = "h-5 w-5" }: { d: string; className?: string }) {
+function Icon({ d, className = "h-5 w-5", filled = false }: { d: string; className?: string; filled?: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+    <svg viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
       <path d={d} />
     </svg>
   );
@@ -54,6 +54,7 @@ function Icon({ d, className = "h-5 w-5" }: { d: string; className?: string }) {
 const ICONS = {
   mic: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3",
   stop: "M6 6h12v12H6z",
+  play: "M8 5v14l11-7z",
   send: "M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z",
   volume: "M11 5L6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14",
   mute: "M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6",
@@ -103,13 +104,15 @@ function Reveal({ text, animate, onTick, onDone }: { text: string; animate: bool
 
 function Bubble({
   turn,
-  onReplay,
+  audio,
+  onAudio,
   animate = false,
   onTick,
   onDone,
 }: {
   turn: { role: Turn["role"]; text: string };
-  onReplay?: () => void;
+  audio?: "playing" | "idle"; // set only on the interviewer message that was or is being spoken
+  onAudio?: () => void;
   animate?: boolean;
   onTick?: () => void;
   onDone?: () => void;
@@ -122,15 +125,22 @@ function Bubble({
     );
   }
   return (
-    <div className="group flex items-start gap-3">
+    <div className="flex items-start gap-3">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-xs font-semibold text-white dark:bg-zinc-100 dark:text-zinc-900">AI</div>
-      <div className="flex max-w-[80%] items-center gap-2">
+      <div className="flex max-w-[80%] flex-col items-start gap-2">
         <p className="rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-2.5 dark:bg-zinc-800">
           <Reveal text={turn.text} animate={animate} onTick={onTick} onDone={onDone} />
         </p>
-        {onReplay && (
-          <button onClick={onReplay} title="Replay question" aria-label="Replay question" className={`${btn} rounded-full p-1.5 text-zinc-400 opacity-0 hover:bg-zinc-100 hover:text-zinc-700 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200`}>
-            <Icon d={ICONS.volume} className="h-4 w-4" />
+        {audio === "playing" && (
+          <button onClick={onAudio} className={`${btn} flex items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-500`}>
+            <Icon d={ICONS.stop} filled className="h-3.5 w-3.5" />
+            Stop and answer
+          </button>
+        )}
+        {audio === "idle" && (
+          <button onClick={onAudio} className={`${btn} flex items-center gap-1.5 rounded-full border border-zinc-300 px-3.5 py-1.5 text-sm text-zinc-600 hover:border-indigo-500 hover:bg-indigo-50 hover:text-indigo-700 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-indigo-950 dark:hover:text-indigo-200`}>
+            <Icon d={ICONS.play} filled className="h-3.5 w-3.5" />
+            Replay
           </button>
         )}
       </div>
@@ -322,8 +332,13 @@ export default function InterviewRoom({ job }: { job: Job }) {
     };
   }, []);
 
+  // New messages scroll smoothly. A status-only change (a button appearing, the typing
+  // dots, an error) scrolls instantly, so it can never end up hidden under the composer.
+  const lastTurns = useRef(turns);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const newMessage = lastTurns.current !== turns;
+    lastTurns.current = turns;
+    bottom.current?.scrollIntoView({ behavior: newMessage ? "smooth" : "auto", block: "end" });
   }, [turns, status]);
 
   useEffect(() => {
@@ -477,9 +492,23 @@ export default function InterviewRoom({ job }: { job: Job }) {
   const clarificationsUsed = lastTurn?.role === "interviewer" ? (lastTurn.clarifications?.length ?? 0) : 0;
   const canClarify = status === "answering" && lastTurn?.role === "interviewer" && clarificationsUsed < MAX_CLARIFICATIONS;
 
+  // The control belongs to the latest interviewer message (a question or a clarification reply).
+  const activeBubble = (() => {
+    if (lastTurn?.role !== "interviewer") return null;
+    const replies = lastTurn.clarifications ?? [];
+    return replies.length
+      ? { key: `c:${turns.length - 1}:${replies.length - 1}`, text: replies[replies.length - 1].reply }
+      : { key: `q:${turns.length - 1}`, text: lastTurn.text };
+  })();
+  const audioFor = (key: string) => {
+    if (!activeBubble || activeBubble.key !== key) return {};
+    if (status === "speaking") return { audio: "playing" as const, onAudio: stopSpeaking };
+    if (status === "answering") return { audio: "idle" as const, onAudio: () => speak(activeBubble.text, () => setStatus("answering")) };
+    return {};
+  };
+
   const answered = turns.filter((t) => t.role === "candidate").length;
   const inProgress = status !== "ready" && status !== "loading";
-  const lastIdx = turns.length - 1;
   const stateLabel: Partial<Record<Status, string>> = {
     thinking: "Thinking...",
     speaking: "Speaking...",
@@ -596,13 +625,13 @@ export default function InterviewRoom({ job }: { job: Job }) {
                   animate={animateKey === `q:${i}`}
                   onTick={keepBottomInView}
                   onDone={finishReveal}
-                  onReplay={t.role === "interviewer" && i === lastIdx && status === "answering" ? () => speak(t.text, () => setStatus("answering")) : undefined}
+                  {...audioFor(`q:${i}`)}
                 />
                 {t.role === "interviewer" &&
                   (t.clarifications ?? []).map((c, j) => (
                     <Fragment key={j}>
                       <Bubble turn={{ role: "candidate", text: c.ask }} />
-                      <Bubble turn={{ role: "interviewer", text: c.reply }} animate={animateKey === `c:${i}:${j}`} onTick={keepBottomInView} onDone={finishReveal} />
+                      <Bubble turn={{ role: "interviewer", text: c.reply }} animate={animateKey === `c:${i}:${j}`} onTick={keepBottomInView} onDone={finishReveal} {...audioFor(`c:${i}:${j}`)} />
                     </Fragment>
                   ))}
               </Fragment>
@@ -627,14 +656,6 @@ export default function InterviewRoom({ job }: { job: Job }) {
       {inProgress && status !== "error" && (
         <div className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
           {error && <p className="mb-2 text-sm text-red-600">{error}</p>}
-          {status === "speaking" && (
-            <div className="mb-2 flex items-center gap-2">
-              <span className="text-xs text-zinc-500">Interviewer is speaking</span>
-              <button onClick={stopSpeaking} className={chip}>
-                Stop and answer
-              </button>
-            </div>
-          )}
           {canClarify && (
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className="text-xs text-zinc-500">Not sure what&apos;s being asked?</span>
