@@ -46,6 +46,12 @@ describe("full conversations (offline fake model)", () => {
       expect(detected.length).toBeGreaterThan(0);
       expect(detected.some((k) => k.includes("Invented"))).toBe(false);
 
+      // The evaluation call rates the final answer; an invented skill from the fake must be dropped.
+      expect(r.lastAnswer?.rating).toBe(scn.persona);
+      const finalWord = scn.answers[scn.answers.length - 1].split(/\W+/).find((w) => w.length > 4);
+      if (finalWord) expect(r.lastAnswer?.skills.length).toBeGreaterThan(0); // the fake only reports a word it can find
+      expect(r.lastAnswer?.skills.some((k) => k.includes("Invented"))).toBe(false);
+
       expect(r.asked.map((t) => t.difficulty)).toEqual(trajectory(scn.persona));
 
       // A follow-up must quote the answer it follows.

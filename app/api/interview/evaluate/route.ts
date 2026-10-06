@@ -1,6 +1,6 @@
 import { guard } from "@/lib/guard";
 import { getJob } from "@/lib/jobs";
-import { evaluationPrompt, parseHistory, TOTAL_QUESTIONS, validateEvaluation } from "@/lib/interview";
+import { evaluationPrompt, parseHistory, parseLastAnswer, TOTAL_QUESTIONS, validateEvaluation } from "@/lib/interview";
 import { chatJson, LlmError } from "@/lib/llm";
 import { log } from "@/lib/logger";
 
@@ -29,12 +29,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    const evaluation = await chatJson({
+    const finalAnswer = history[history.length - 1].text; // the interview is complete, so this is the candidate's last answer
+    const { evaluation, lastAnswer } = await chatJson({
       label: `evaluate:${job.id}`,
       messages: evaluationPrompt(job, history),
-      validate: validateEvaluation,
+      validate: (raw) => ({ evaluation: validateEvaluation(raw), lastAnswer: parseLastAnswer(raw, finalAnswer) }),
     });
-    return Response.json({ evaluation });
+    return Response.json({ evaluation, lastAnswer });
   } catch (e) {
     const kind = e instanceof LlmError ? e.kind : "unknown";
     log("error", "evaluate.failed", { jobId: job.id, kind });

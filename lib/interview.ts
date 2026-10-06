@@ -202,6 +202,16 @@ export function validateQuestion(raw: unknown, gen?: Gen): NextQuestion {
   return out;
 }
 
+// The final answer has no "next question" to carry its rating, so the evaluation call rates it.
+export type LastAnswer = { rating: Assessment; skills: string[] };
+
+// Lenient on purpose: a missing or malformed rating must never fail the evaluation.
+export function parseLastAnswer(raw: unknown, answer: string): LastAnswer | undefined {
+  const r = (raw as Record<string, unknown> | null)?.last_answer as Record<string, unknown> | undefined;
+  if (!r || !ASSESSMENTS.includes(r.rating as string)) return undefined;
+  return { rating: r.rating as Assessment, skills: cleanSkills(r.skills, answer) };
+}
+
 export function validateEvaluation(raw: unknown): Evaluation {
   const r = raw as Record<string, unknown>;
   const list = (v: unknown, field: string) => {
@@ -343,7 +353,8 @@ Base every point on what was actually said. ${SAFETY}
 The interview may be in another language, but ALWAYS write the evaluation in English.
 ${SCORE_GUIDE}
 The interviewer rated each answer live; use these ratings as evidence. Answers to harder questions deserve more weight.
-Reply with only JSON: {"strengths": [1-4 short strings], "concerns": [1-4 short strings], "overall_score": integer 1-10, "summary": 2 sentences}`,
+The final answer was not rated live: rate it yourself on the same strong/adequate/weak scale in last_answer.
+Reply with only JSON: {"strengths": [1-4 short strings], "concerns": [1-4 short strings], "overall_score": integer 1-10, "summary": 2 sentences, "last_answer": {"rating": "strong" | "adequate" | "weak", "skills": up to 5 short skills, technologies or concepts the candidate actually showed in the final answer, worded as they said them}}`,
     },
     { role: "user", content: `Live ratings:\n${answerNotes(history)}\n\nTranscript:\n${formatTranscript(history)}` },
   ];

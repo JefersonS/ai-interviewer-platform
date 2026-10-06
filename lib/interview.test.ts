@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   answerNotes,
+  parseLastAnswer,
   cleanSkills,
   translationPrompt,
   validateTranslation,
@@ -354,5 +355,28 @@ describe("skills detected", () => {
     const turn = { ...(q("new_topic") as Extract<Turn, { role: "interviewer" }>), skills: ["Postgres"] };
     const parsed = parseHistory([turn]);
     expect(parsed[0].role === "interviewer" && parsed[0].skills).toEqual(["Postgres"]);
+  });
+});
+
+describe("final answer rating (from the evaluation call)", () => {
+  const answer = "We moved to online migrations with Postgres.";
+
+  it("reads the rating and keeps only skills that were actually said", () => {
+    const parsed = parseLastAnswer({ last_answer: { rating: "strong", skills: ["Postgres", "online migrations", "Kafka"] } }, answer);
+    expect(parsed).toEqual({ rating: "strong", skills: ["Postgres", "online migrations"] });
+  });
+  it("is undefined, never an error, when the rating is missing or invalid", () => {
+    expect(parseLastAnswer({}, answer)).toBeUndefined();
+    expect(parseLastAnswer(null, answer)).toBeUndefined();
+    expect(parseLastAnswer({ last_answer: { rating: "great", skills: [] } }, answer)).toBeUndefined();
+    expect(parseLastAnswer({ last_answer: "strong" }, answer)).toBeUndefined();
+  });
+  it("tolerates missing skills", () => {
+    expect(parseLastAnswer({ last_answer: { rating: "weak" } }, answer)).toEqual({ rating: "weak", skills: [] });
+  });
+  it("asks the evaluator for it, since no live rating exists for the final answer", () => {
+    const [system] = evaluationPrompt(job, history(["new_topic"]));
+    expect(system.content).toContain("last_answer");
+    expect(system.content).toContain("The final answer was not rated live");
   });
 });

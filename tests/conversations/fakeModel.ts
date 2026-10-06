@@ -64,6 +64,7 @@ export function fakeModel(scn: Scenario) {
         concerns: ["Could go deeper"],
         overall_score: scn.persona === "strong" ? 8 : 3,
         summary: "Scripted evaluation.",
+        last_answer: { rating: scn.persona, skills: [scn.answers[scn.answers.length - 1].split(/\W+/).find((w) => w.length > 4), "Invented Skill 123"] },
       };
     } else if (system.startsWith("You are the interviewer for the role")) {
       payload = { reply: "Sure, think of a recent project. Over to you." };

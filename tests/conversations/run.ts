@@ -7,7 +7,9 @@ import { getJob } from "@/lib/jobs";
 import type { Scenario } from "./scenarios";
 
 type Asked = Extract<Turn, { role: "interviewer" }>;
-export type Result = { history: Turn[]; asked: Asked[]; evaluation: Evaluation; doneAfterLast: boolean };
+import type { LastAnswer } from "@/lib/interview";
+
+export type Result = { history: Turn[]; asked: Asked[]; evaluation: Evaluation; lastAnswer?: LastAnswer; doneAfterLast: boolean };
 
 async function call(handler: (r: Request) => Promise<Response>, body: unknown) {
   const res = await handler(new Request("http://test.local/api", { method: "POST", body: JSON.stringify(body) }));
@@ -54,6 +56,7 @@ export async function runConversation(scn: Scenario): Promise<Result> {
     history,
     asked: history.filter((t): t is Asked => t.role === "interviewer"),
     evaluation: ev.data.evaluation,
+    lastAnswer: ev.data.lastAnswer,
     doneAfterLast: after.data.done === true,
   };
 }
@@ -95,6 +98,13 @@ export function assertInvariants(scn: Scenario, r: Result) {
   else expect(r.evaluation.overall_score).toBeLessThanOrEqual(5);
   expect(r.evaluation.strengths.length).toBeGreaterThan(0);
   expect(r.evaluation.concerns.length).toBeGreaterThan(0);
+
+  // The final answer is rated by the evaluation call; skills must come from that answer.
+  if (r.lastAnswer) {
+    expect(["strong", "adequate", "weak"]).toContain(r.lastAnswer.rating);
+    const squash = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    r.lastAnswer.skills.forEach((k) => expect(squash(scn.answers[scn.answers.length - 1])).toContain(squash(k)));
+  }
 
   if (scn.clarifyAfter !== undefined) {
     expect(r.asked[scn.clarifyAfter].clarifications).toHaveLength(1);
