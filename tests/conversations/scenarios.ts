@@ -9,7 +9,7 @@ export type Scenario = {
   clarifyAfter?: number; // 0-based question index at which the candidate asks for clarification
   // Only used by the offline fake model:
   eager: boolean; // follow up whenever the policy leaves the choice open
-  flakyAtQuestion?: number; // fake model gets this question's difficulty wrong until it is told why
+  flakyAtQuestion?: number; // fake model omits the rating of the previous answer at this question until it is told why
   failQuestions?: "all" | number[]; // fake model returns garbage for these questions (0-based), forcing the fallback
 };
 

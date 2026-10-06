@@ -19,9 +19,10 @@ export function fakeModel(scn: Scenario) {
       difficulty = Number(scn.persona === "strong" ? levels[1] : levels[3]);
     }
 
-    // Reproduces a real failure: wrong difficulty until the retry explains the rejection.
+    // Reproduces a real failure: the rating of the previous answer is missing until the retry
+    // explains the rejection.
     const repaired = messages.some((m) => m.content.includes("Your reply was rejected"));
-    if (idx === scn.flakyAtQuestion && !repaired) difficulty = (difficulty % 4) + 1;
+    const forgetsRating = idx === scn.flakyAtQuestion && !repaired;
 
     const areas = /exactly one of[^:\n]*: (.+)\.$/m.exec(system)?.[1].split("; ") ?? [];
     const mustFollowUp = system.includes("You MUST ask a follow_up");
@@ -33,7 +34,7 @@ export function fakeModel(scn: Scenario) {
     const realWord = lastAnswer.split(/\W+/).find((w) => w.length > 4);
     return {
       skills: idx === 0 || !realWord ? [] : [realWord, "Invented Skill 123"],
-      assessment: idx === 0 ? null : scn.persona,
+      assessment: idx === 0 || forgetsRating ? null : scn.persona,
       reaction: idx === 0 ? "Hi, I'm your AI interviewer." : "Thanks for sharing that.",
       question: `Question ${idx + 1}: tell me more about this?`,
       kind,

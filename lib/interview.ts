@@ -122,6 +122,19 @@ export function difficultyFor(index: number, assessment: Assessment | null): Dif
 
 const ASSESSMENTS = ["strong", "adequate", "weak"];
 
+// An exact name (any case), or a unique partial one such as "databases" for
+// "databases and data modeling". Ambiguous or unrelated names are not matched.
+export function matchArea(given: string, areas: string[]): string | undefined {
+  const exact = areas.find((a) => a.toLowerCase() === given.trim().toLowerCase());
+  if (exact) return exact;
+  const g = squash(given);
+  if (g.length < 4) return undefined;
+  const partial = areas.filter((a) => squash(a).includes(g) || g.includes(squash(a)));
+  return partial.length === 1 ? partial[0] : undefined;
+}
+
+const firstWords = (text: string, n: number) => text.replace(/["\n]/g, " ").split(/\s+/).filter(Boolean).slice(0, n).join(" ");
+
 const squash = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
 // Skills the model says the candidate showed. When the answer is known, a skill is kept only
@@ -155,28 +168,49 @@ export type Gen = {
 
 export function validateQuestion(raw: unknown, gen?: Gen): NextQuestion {
   const r = raw as Record<string, unknown>;
-  const kind = r?.kind;
-  if (kind !== "new_topic" && kind !== "follow_up") throw new Error("kind must be new_topic or follow_up");
-  if (gen?.required && kind !== gen.required) throw new Error(`kind must be ${gen.required}`);
+  const stated = r?.kind;
+  if (stated !== "new_topic" && stated !== "follow_up") throw new Error("kind must be new_topic or follow_up");
+  let kind: QuestionKind = stated;
+  let references = typeof r.references === "string" ? r.references.trim().slice(0, 300) : "";
 
   const assessment = r.assessment ?? null;
   if (assessment !== null && !ASSESSMENTS.includes(assessment as string)) {
     throw new Error("assessment must be strong, adequate, weak, or null");
   }
-  const difficulty = Number(r.difficulty);
-  if (![1, 2, 3, 4].includes(difficulty)) throw new Error("difficulty must be 1-4");
+  // Stored history must carry a valid level. For a new question the model's number is ignored:
+  // the level follows from its rating by a rule the code already knows, so rejecting a reply
+  // over it only cost a retry (it was the most common reason for one).
+  let difficulty = Number(r.difficulty);
+  if (!gen && ![1, 2, 3, 4].includes(difficulty)) throw new Error("difficulty must be 1-4");
 
   let area = typeof r.area === "string" ? r.area.trim().slice(0, 80) : "";
   if (gen) {
     if (gen.index > 0 && assessment === null) throw new Error("assessment is required after the first question");
-    const expected = difficultyFor(gen.index, gen.index === 0 ? null : (assessment as Assessment));
-    if (difficulty !== expected) throw new Error(`difficulty must be ${expected} for this assessment`);
+    difficulty = difficultyFor(gen.index, gen.index === 0 ? null : (assessment as Assessment));
+
+    // The model often files a deeper question on the area just discussed as a "new topic", and
+    // repeats it on every retry (the most common remaining reason for one). That is a follow-up,
+    // so treat it as one while follow-ups are still allowed. Naming a different area, or
+    // revisiting an older one, is not converted.
+    if (
+      kind === "new_topic" &&
+      gen.required !== "new_topic" &&
+      gen.index > 0 &&
+      gen.parentArea &&
+      typeof r.area === "string" &&
+      matchArea(r.area, [gen.parentArea]) &&
+      !matchArea(r.area, gen.areas)
+    ) {
+      kind = "follow_up";
+      if (!references && gen.lastAnswer) references = firstWords(gen.lastAnswer, 12); // the model gave no quote, so use the answer's opening
+    }
+    if (gen.required && kind !== gen.required) throw new Error(`kind must be ${gen.required}`);
 
     if (kind === "follow_up") {
       area = gen.parentArea ?? ""; // inherited, so the model cannot misfile a follow-up
     } else {
       const given = str(r.area, "area", 80).toLowerCase();
-      const match = gen.areas.find((a) => a.toLowerCase() === given);
+      const match = matchArea(given, gen.areas);
       const hint = gen.required === "new_topic" ? "" : "; to stay on the previous area use kind follow_up instead";
       if (!match) throw new Error(`area must be exactly one of: ${gen.areas.join("; ")}${hint}`);
       area = match;
@@ -191,7 +225,7 @@ export function validateQuestion(raw: unknown, gen?: Gen): NextQuestion {
     topic: str(r.topic, "topic", 80),
     area,
     reasoning: str(r.reasoning, "reasoning"),
-    references: typeof r.references === "string" ? r.references.trim().slice(0, 300) : "",
+    references,
     difficulty: difficulty as Difficulty,
     assessment: gen?.index === 0 ? null : (assessment as Assessment | null),
     skills: gen?.index === 0 ? [] : cleanSkills(r.skills, gen?.lastAnswer),
@@ -275,8 +309,8 @@ export function questionPrompt(job: Job, history: Turn[], decision: AskDecision,
 
   const pacing =
     index === 0
-      ? 'Pacing: this is the opening, so there is no previous answer. Set "assessment" to null and "difficulty" to 1.'
-      : `Pacing: the base difficulty for this question is ${base}. First rate the candidate's last answer on substance: strong (specific, correct, shows depth), adequate, or weak (vague, off-topic, wrong, or very short). Then set "difficulty" exactly as follows: ${levels}.`;
+      ? 'Pacing: this is the opening, so there is no previous answer. Set "assessment" to null and write an easy warm-up question (difficulty 1).'
+      : `Pacing: the base difficulty for this question is ${base}. First rate the candidate's last answer on substance: strong (specific, correct, shows depth), adequate, or weak (vague, off-topic, wrong, or very short). Then write the question at the difficulty that matches your rating: ${levels}.`;
 
   const system = `You are a friendly, professional interviewer hiring for the role "${job.title}" (${job.description}).
 Role focus areas: ${job.focusAreas.join("; ")}.
@@ -290,7 +324,7 @@ ${pacing}
 Difficulty scale: ${(Object.entries(DIFFICULTY_LABELS) as [string, string][]).map(([k, v]) => `${k} = ${v}`).join("; ")}.
 For a follow_up, a strong answer deserves a deeper probe and a weak one a simpler clarifying probe.
 ${SAFETY}
-Reply with only JSON: {"assessment": "strong" | "adequate" | "weak" | null, "reaction": string, "question": string, "kind": "new_topic" | "follow_up", "area": a focus area exactly as listed, "difficulty": 1-4, "topic": short label, "reasoning": one sentence on why this question, "references": exact words from the candidate's last answer you are following up on, or "", "skills": up to 5 short skills, technologies or concepts the candidate actually showed in their last answer, worded as they said them ([] for the opening)}`;
+Reply with only JSON: {"assessment": "strong" | "adequate" | "weak" | null, "reaction": string, "question": string, "kind": "new_topic" | "follow_up", "area": a focus area exactly as listed, "topic": short label, "reasoning": one sentence on why this question, "references": exact words from the candidate's last answer you are following up on, or "", "skills": up to 5 short skills, technologies or concepts the candidate actually showed in their last answer, worded as they said them ([] for the opening)}`;
 
   const user = history.length
     ? `Transcript so far:

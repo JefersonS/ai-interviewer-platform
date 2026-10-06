@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   answerNotes,
+  matchArea,
   parseLastAnswer,
   cleanSkills,
   translationPrompt,
@@ -145,10 +146,16 @@ describe("validateQuestion", () => {
   it("generation mode requires a reaction", () => {
     expect(() => validateQuestion(ok, G())).toThrow(/reaction/);
   });
-  it("rejects a difficulty that breaks the pacing rule", () => {
-    const mid = { ...raw, assessment: "strong", difficulty: baseDifficulty(3) };
-    expect(() => validateQuestion(mid, G({ index: 3 }))).toThrow(/difficulty must be/);
-    expect(validateQuestion({ ...mid, difficulty: baseDifficulty(3) + 1 }, G({ index: 3 })).difficulty).toBe(baseDifficulty(3) + 1);
+  it("ignores the difficulty the model reports and applies the pacing rule", () => {
+    const strong = { ...raw, assessment: "strong" };
+    const expected = baseDifficulty(3) + 1; // strong answer: one level above the base
+    expect(validateQuestion({ ...strong, difficulty: 1 }, G({ index: 3 })).difficulty).toBe(expected);
+    expect(validateQuestion({ ...strong, difficulty: 4 }, G({ index: 3 })).difficulty).toBe(expected);
+    expect(validateQuestion({ ...strong, difficulty: undefined }, G({ index: 3 })).difficulty).toBe(expected);
+    expect(validateQuestion({ ...raw, assessment: "weak", difficulty: 4 }, G({ index: 3 })).difficulty).toBe(baseDifficulty(3) - 1);
+  });
+  it("still requires a valid difficulty in stored history", () => {
+    expect(() => validateQuestion({ ...ok, difficulty: 9 })).toThrow(/difficulty must be/);
   });
   it("requires an assessment after the first question", () => {
     expect(() => validateQuestion({ ...raw, difficulty: baseDifficulty(2) }, G({ index: 2 }))).toThrow(/assessment/);
@@ -378,5 +385,76 @@ describe("final answer rating (from the evaluation call)", () => {
     const [system] = evaluationPrompt(job, history(["new_topic"]));
     expect(system.content).toContain("last_answer");
     expect(system.content).toContain("The final answer was not rated live");
+  });
+});
+
+describe("matchArea", () => {
+  const areas = ["API design", "databases and data modeling", "reliability and debugging in production", "scaling and performance"];
+
+  it("matches an exact name in any case", () => {
+    expect(matchArea("api DESIGN", areas)).toBe("API design");
+  });
+  it("matches a unique partial name in either direction", () => {
+    expect(matchArea("databases", areas)).toBe("databases and data modeling");
+    expect(matchArea("Scaling", areas)).toBe("scaling and performance");
+    expect(matchArea("scaling and performance in production", areas)).toBe("scaling and performance"); // the model added words around one area name
+  });
+  it("refuses ambiguous, short, or unrelated names", () => {
+    expect(matchArea("and", areas)).toBeUndefined();
+    expect(matchArea("API", areas)).toBeUndefined();
+    expect(matchArea("cooking", areas)).toBeUndefined();
+    expect(matchArea("production", ["reliability in production", "production support"])).toBeUndefined(); // two candidates
+  });
+  it("is used when validating a new topic, so a near-miss no longer costs a retry", () => {
+    const raw = { question: "Why?", reaction: "Thanks.", kind: "new_topic", topic: "x", area: "databases", reasoning: "y", references: "", assessment: "adequate" };
+    const gen = { required: null, index: 2, areas: ["databases and data modeling", "scaling and performance"], parentArea: null, lastAnswer: "" };
+    expect(validateQuestion(raw, gen).area).toBe("databases and data modeling");
+  });
+});
+
+describe("a new topic about the area just discussed", () => {
+  const areas = job.focusAreas;
+  const lastAnswer = "I added idempotency keys after we had duplicate charges, and moved to online migrations.";
+  const gen = (over: Partial<Gen> = {}): Gen => ({ required: null, index: 2, areas: areas.slice(1), parentArea: areas[0], lastAnswer, ...over });
+  const raw = (over: Record<string, unknown> = {}) => ({
+    question: "How did you implement them?", reaction: "Thanks.", kind: "new_topic", topic: "x", area: areas[0],
+    reasoning: "y", references: "", assessment: "adequate", ...over,
+  });
+
+  it("becomes a follow-up when follow-ups are allowed, with the area inherited", () => {
+    const q = validateQuestion(raw(), gen());
+    expect(q.kind).toBe("follow_up");
+    expect(q.area).toBe(areas[0]);
+  });
+
+  it("uses the model's own quote when it gave one, otherwise the opening of the answer", () => {
+    expect(validateQuestion(raw({ references: "duplicate charges" }), gen()).references).toBe("duplicate charges");
+    expect(validateQuestion(raw(), gen()).references).toBe("I added idempotency keys after we had duplicate charges, and moved to");
+  });
+
+  it("also fixes the case where a follow-up is required but the model said new topic", () => {
+    expect(validateQuestion(raw(), gen({ required: "follow_up" })).kind).toBe("follow_up");
+  });
+
+  it("is not converted when the interview must move on to a new area", () => {
+    expect(() => validateQuestion(raw(), gen({ required: "new_topic" }))).toThrow(/area must be/);
+  });
+
+  it("is not converted for a real uncovered area, or a different covered one", () => {
+    expect(validateQuestion(raw({ area: areas[1] }), gen()).kind).toBe("new_topic");
+    expect(() => validateQuestion(raw({ area: "cooking" }), gen())).toThrow(/area must be/);
+    // an older, already covered area that is not the one just discussed
+    expect(() => validateQuestion(raw({ area: areas[0] }), gen({ parentArea: areas[2], areas: [areas[1]] }))).toThrow(/area must be/);
+  });
+
+  it("is not converted on the opening question, or when every area is open again", () => {
+    expect(() => validateQuestion(raw({ difficulty: 1, assessment: null, area: "cooking" }), gen({ index: 0, parentArea: null }))).toThrow(/area must be/);
+    // all areas covered: the parent area is also a valid new topic, so it is taken as one
+    expect(validateQuestion(raw(), gen({ areas })).kind).toBe("new_topic");
+  });
+
+  it("counts toward the follow-up budget, because the stored kind is follow-up", () => {
+    const q = validateQuestion(raw(), gen());
+    expect(q.kind === "follow_up" && q.references.length > 0).toBe(true);
   });
 });
