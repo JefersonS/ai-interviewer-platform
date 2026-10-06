@@ -132,15 +132,23 @@ function Bubble({
           <Reveal text={turn.text} animate={animate} onTick={onTick} onDone={onDone} />
         </p>
         {audio === "playing" && (
-          <button onClick={onAudio} className={`${btn} flex items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-500`}>
-            <Icon d={ICONS.stop} filled className="h-3.5 w-3.5" />
-            Stop and answer
+          <button
+            onClick={onAudio}
+            aria-label="Stop and answer"
+            title="Stop and answer"
+            className={`${btn} flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-white shadow-sm hover:bg-indigo-500`}
+          >
+            <Icon d={ICONS.stop} filled className="h-3 w-3" />
           </button>
         )}
         {audio === "idle" && (
-          <button onClick={onAudio} className={`${btn} flex items-center gap-1.5 rounded-full border border-zinc-300 px-3.5 py-1.5 text-sm text-zinc-600 hover:border-indigo-500 hover:bg-indigo-50 hover:text-indigo-700 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-indigo-950 dark:hover:text-indigo-200`}>
-            <Icon d={ICONS.play} filled className="h-3.5 w-3.5" />
-            Replay
+          <button
+            onClick={onAudio}
+            aria-label="Replay"
+            title="Replay"
+            className={`${btn} flex h-8 w-8 items-center justify-center rounded-full border border-zinc-300 text-zinc-500 hover:border-indigo-500 hover:bg-indigo-50 hover:text-indigo-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-indigo-950 dark:hover:text-indigo-200`}
+          >
+            <Icon d={ICONS.play} filled className="h-3 w-3 translate-x-px" />
           </button>
         )}
       </div>
